@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from cursor_pointer import CursorPointer  # noqa: E402
 
 # Eager-imported alias so tests can patch `run_agent.trigger_system_screenshot`
 # without having to dig into run_ocr. Production code already does this lazy
@@ -777,9 +778,16 @@ ACTION_RE = re.compile(
 )
 
 
+def _parse_drag(action_str: str) -> tuple[int | None, int | None]:
+    """Parse 'drag <from_id> to <to_id>'. Returns (None, None) on mismatch."""
+    m = re.search(r"drag\s+(\d+)\s+to\s+(\d+)", action_str, re.IGNORECASE)
+    if not m:
+        return None, None
+    return int(m.group(1)), int(m.group(2))
+
+
 def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     """Parse and run one action. Return None on success, error msg on failure."""
-    from cursor_pointer import CursorPointer
     cp = CursorPointer()
 
     m = ACTION_RE.search(action_str)
@@ -850,6 +858,22 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
         except Exception as e:
             return f"AXScrollToVisible crashed: {e}"
         return f"#{eid} does not support AXScrollToVisible"
+    if verb == "drag":
+        f, t = _parse_drag(action_str)
+        if f is None:
+            return f"drag needs 'from to' ids, got {action_str!r}"
+        el_from = next((b for b in boxes if b["id"] == f), None)
+        el_to = next((b for b in boxes if b["id"] == t), None)
+        if not el_from or not el_to:
+            return f"drag: bad id(s) {f}/{t}"
+        fx = el_from["x"] + el_from["w"] // 2
+        fy = el_from["y"] + el_from["h"] // 2
+        tx = el_to["x"] + el_to["w"] // 2
+        ty = el_to["y"] + el_to["h"] // 2
+        cp.move(fx, fy)
+        time.sleep(0.2)
+        cp.drag(from_xy=(fx, fy), to_xy=(tx, ty))
+        return None
     if verb == "type":
         # arg via regex is only set when the text was fully quoted. For
         # missing-quote / non-ASCII / multiline content, grab everything after

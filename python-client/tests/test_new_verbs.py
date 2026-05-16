@@ -68,3 +68,55 @@ def test_action_re_still_recognizes_existing_click():
     m = ACTION_RE.search("click 7")
     assert m["verb"].lower() == "click"
     assert m["arg"] == "7"
+
+
+# ---------------------------------------------------------------------------
+# drag verb
+# ---------------------------------------------------------------------------
+
+from run_agent import _parse_drag, execute
+
+
+def test_parse_drag_basic():
+    assert _parse_drag("drag 5 to 9") == (5, 9)
+
+
+def test_parse_drag_extra_words():
+    assert _parse_drag("drag 5 to 9 quickly") == (5, 9)
+
+
+def test_parse_drag_missing_to():
+    assert _parse_drag("drag 5 9") == (None, None)
+
+
+def test_drag_invokes_cp_drag():
+    boxes = [
+        {"id": 5, "x": 10, "y": 20, "w": 30, "h": 40, "role": "Cell",
+         "label": "src", "parent_label": "", "parent_bbox": None,
+         "ax_ref": None, "parent_ax_ref": None},
+        {"id": 9, "x": 100, "y": 200, "w": 30, "h": 40, "role": "Cell",
+         "label": "dst", "parent_label": "", "parent_bbox": None,
+         "ax_ref": None, "parent_ax_ref": None},
+    ]
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.time.sleep"):
+        result = execute("drag 5 to 9", boxes)
+    assert result is None
+    mock_cp.drag.assert_called_once_with(
+        from_xy=(25, 40),
+        to_xy=(115, 220),
+    )
+
+
+def test_drag_with_bad_ids_returns_error():
+    boxes = [
+        {"id": 5, "x": 10, "y": 20, "w": 30, "h": 40, "role": "Cell",
+         "label": "src", "parent_label": "", "parent_bbox": None,
+         "ax_ref": None, "parent_ax_ref": None},
+    ]
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp):
+        result = execute("drag 5 to 99", boxes)
+    assert result is not None
+    assert "bad id" in result.lower() or "99" in result
