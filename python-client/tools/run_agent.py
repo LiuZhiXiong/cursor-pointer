@@ -1165,7 +1165,14 @@ SYSTEM_PROMPT = textwrap.dedent("""\
     你是一个能操作 macOS 桌面的自动化 agent。你看到的图片是当前屏幕，
     粉色编号方框是你可以交互的元素（按钮/链接/输入框等）。
 
-    给你一个目标，你每一步从下面挑一个动作输出，**只输出一行**：
+    给你一个目标，你每一步必须输出两行：
+        subgoal: <一句话描述你这一步想完成的子目标>
+        action: <click 5 | scroll down | clipboard write "..." | done ...>
+
+    sub-goal 可以跨步保持不变（推进同一目标），也可以每步换（切换思路）。
+    若 prompt 提示 "sub-goal 连续 N 步失败"，必须换 sub-goal 描述。
+
+    action 行的合法语法（任选一个）:
 
         click <id>          # 点击编号为 id 的元素
         dclick <id>         # 双击
@@ -1183,7 +1190,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
         done <短结论>        # 任务完成或放弃
 
     重要规则：
-      • 只输出一行，没有 markdown、没有解释、没有多余空格。
+      • 严格两行：第一行 subgoal: ...，第二行 action: ...，没有多余行、没有 markdown。
       • 优先 click 真·按钮（圆形 / 实心彩色 / 明显图标），少点装饰文字。
       • 看不清楚就 wait 1。
       • 找不到目标元素时用 `scroll down` 探索；元素清单里已有但部分被截则用 `scroll_to`。
@@ -1230,6 +1237,9 @@ def main() -> int:
     from run_ocr import trigger_system_screenshot  # type: ignore
 
     history.clear()
+    global current_subgoal, consec_subgoal_fails
+    current_subgoal = ""
+    consec_subgoal_fails = 0
     last_click_xy: Optional[tuple[int, int]] = None
     total_t0 = time.time()
     # Banned points: list of (cx, cy) we clicked but didn't move state. ids are
@@ -1332,11 +1342,12 @@ def main() -> int:
         if banned_xy:
             prompt += f"⚠ 已经点过 {len(banned_xy)} 个位置都没用，换个明显不同的位置\n"
             prompt += "  → 改选更宽的行（role=Row）或换屏幕另一侧的元素\n\n"
+        prompt += build_stuck_warning(current_subgoal, consec_subgoal_fails)
         prompt += (
             "请优先按标签语义匹配目标（如 精选 / 推荐 / play / search 等），"
             "再用图里的位置确认。如果目标是切换 tab，优先选宽行（w>80）"
             "或带文字标签的 Row 元素，**不要选 icon-only 的 Image**。"
-            "只输出一行动作:"
+            "按格式输出两行（subgoal: ... 然后 action: ...）:"
         )
         t0 = time.time()
         try:
@@ -1345,10 +1356,11 @@ def main() -> int:
         except Exception as e:
             _log(f"  ✗ MiniMax failed after retries: {e} — skipping step")
             continue
-        action = raw.strip().splitlines()[0].strip() if raw.strip() else ""
-        # If MiniMax wrapped action in markdown / quotes, strip.
-        action = action.strip("`*\" ").lstrip("➜→- ")
+        subgoal, action_raw = parse_action_with_subgoal(raw)
+        action = action_raw.strip("`*\" ").lstrip("➜→- ")
+        _log(f"  → subgoal: {subgoal!r}")
         _log(f"  MiniMax ({time.time()-t0:.1f}s): {action!r}")
+        prev_subgoal_for_counter = current_subgoal
 
         # AX semantic signature is rock-solid — invariant to all UI
         # animations / screenshot preview thumbnails / cursor halo.
@@ -1363,7 +1375,14 @@ def main() -> int:
             result = execute(action, boxes)
         except Exception as e:
             _log(f"  ✗ execute crashed: {e}")
-            history.append(f"step {step}: CRASHED {action} ({e})")
+            history.append(f"step {step}: [{subgoal}] CRASHED {action} ({e})")
+            consec_subgoal_fails = update_subgoal_failure_counter(
+                prev_count=consec_subgoal_fails,
+                prev_subgoal=prev_subgoal_for_counter,
+                new_subgoal=subgoal,
+                step_failed=True,
+            )
+            current_subgoal = subgoal
             time.sleep(1.0)
             continue
         if result == "DONE":
@@ -1394,14 +1413,30 @@ def main() -> int:
             continue
         if result is not None:
             _log(f"  ✗ {result}")
-            history.append(f"step {step}: FAILED {action} ({result})")
+            history.append(f"step {step}: [{subgoal}] FAILED {action} ({result})")
+            consec_subgoal_fails = update_subgoal_failure_counter(
+                prev_count=consec_subgoal_fails,
+                prev_subgoal=prev_subgoal_for_counter,
+                new_subgoal=subgoal,
+                step_failed=True,
+            )
+            current_subgoal = subgoal
+            if consec_subgoal_fails >= 3:
+                _log(f"  ⚠ stuck: subgoal {subgoal!r} failed {consec_subgoal_fails} consecutive steps")
             # If MiniMax wrote unparseable garbage, treat as a "wait 1" and move on
             # rather than burning a step indefinitely.
             if "could not parse" in result or "unknown verb" in result:
                 _log(f"  → falling back to wait 1 to recover")
                 time.sleep(1.0)
         else:
-            history.append(f"step {step}: {action}")
+            history.append(f"step {step}: [{subgoal}] {action} (ok)")
+            consec_subgoal_fails = update_subgoal_failure_counter(
+                prev_count=consec_subgoal_fails,
+                prev_subgoal=prev_subgoal_for_counter,
+                new_subgoal=subgoal,
+                step_failed=False,
+            )
+            current_subgoal = subgoal
 
         # Post-click verification — AX-only, no screenshot needed.
         if action.startswith(("click", "dclick", "rclick")) and result is None:
