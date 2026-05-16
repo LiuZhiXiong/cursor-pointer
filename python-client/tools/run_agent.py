@@ -874,6 +874,28 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
         time.sleep(0.2)
         cp.drag(from_xy=(fx, fy), to_xy=(tx, ty))
         return None
+    if verb == "app":
+        name = ""
+        if arg:
+            name = arg.strip('"').strip()
+        if not name:
+            idx = action_str.lower().find("app")
+            if idx >= 0:
+                rest = action_str[idx + 3:].strip()
+                name = rest.strip('"\'')
+        if not name:
+            return "app needs <name>"
+        try:
+            subprocess.run(
+                ["osascript", "-e", f'tell application "{name}" to activate'],
+                capture_output=True, timeout=5, check=True,
+            )
+            return None
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or b"").decode(errors="replace")[:80]
+            return f"app activate failed: {stderr.strip()}"
+        except subprocess.TimeoutExpired:
+            return f"app activate {name!r} timed out (5s)"
     if verb == "type":
         # arg via regex is only set when the text was fully quoted. For
         # missing-quote / non-ASCII / multiline content, grab everything after

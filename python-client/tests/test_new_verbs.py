@@ -120,3 +120,43 @@ def test_drag_with_bad_ids_returns_error():
         result = execute("drag 5 to 99", boxes)
     assert result is not None
     assert "bad id" in result.lower() or "99" in result
+
+
+# ---------------------------------------------------------------------------
+# app verb
+# ---------------------------------------------------------------------------
+
+import subprocess as _subprocess  # alias so patches don't break drag tests
+
+
+def test_app_invokes_osascript_with_name():
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stderr=b"")
+        result = execute("app NeteaseMusic", boxes=[])
+    assert result is None
+    args, kwargs = mock_run.call_args
+    cmd = args[0]
+    assert cmd[0] == "osascript"
+    assert any("NeteaseMusic" in s for s in cmd)
+
+
+def test_app_without_name_returns_error():
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp):
+        result = execute("app", boxes=[])
+    assert result is not None
+    assert "needs" in result.lower() or "name" in result.lower()
+
+
+def test_app_osascript_failure_returns_error():
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run") as mock_run:
+        mock_run.side_effect = _subprocess.CalledProcessError(
+            1, "osascript", stderr=b"application not found"
+        )
+        result = execute("app NoSuchApp", boxes=[])
+    assert result is not None
+    assert "failed" in result.lower() or "not found" in result.lower()
