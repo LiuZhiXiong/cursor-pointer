@@ -685,6 +685,49 @@ SHELL_WHITELIST = frozenset({
 })
 
 # ---------------------------------------------------------------------------
+# Multi-step planner — sub-goal parsing (worker VLM emits two lines per step)
+# ---------------------------------------------------------------------------
+
+
+def parse_action_with_subgoal(raw: str) -> tuple[str, str]:
+    """Parse the VLM's two-line output.
+
+    Lines:
+        subgoal: <free text>
+        action:  <click 5 | scroll down | ...>
+
+    Tolerates extra noise lines and missing prefixes — getting an action
+    is more important than enforcing the format. Defaults sub-goal to
+    "(unspecified)" when missing.
+    """
+    subgoal = "(unspecified)"
+    action = ""
+    have_sub = False
+    have_act = False
+
+    lines = [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
+    for ln in lines:
+        lower = ln.lower()
+        if not have_sub and lower.startswith("subgoal:"):
+            subgoal = ln.split(":", 1)[1].strip() or "(unspecified)"
+            have_sub = True
+            continue
+        if not have_act and lower.startswith("action:"):
+            action = ln.split(":", 1)[1].strip()
+            have_act = True
+            continue
+
+    if not action:
+        for ln in lines:
+            if ln.lower().startswith("subgoal:"):
+                continue
+            action = ln.strip()
+            break
+
+    return subgoal, action
+
+
+# ---------------------------------------------------------------------------
 # Goal-aware verification (review the worker VLM's `done` claim)
 # ---------------------------------------------------------------------------
 
