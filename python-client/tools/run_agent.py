@@ -206,6 +206,29 @@ def hover_then_click(cp, x: int, y: int, *, count: int = 1,
     cp.click(x, y, count=count, button=button)
 
 
+def ax_press_element(ax_ref) -> bool:
+    """Perform AXPress on a live AXUIElement; True on success.
+
+    Many Electron apps (NeteaseMusic / Slack / Discord …) ignore synthetic
+    mouse clicks on sidebar / nav items but respond reliably to AXPress
+    because the action goes through the app's own AX handler instead of OS
+    event delivery.
+    """
+    if ax_ref is None:
+        return False
+    try:
+        from ApplicationServices import (  # type: ignore
+            AXUIElementCopyActionNames,
+            AXUIElementPerformAction,
+        )
+        err, actions = AXUIElementCopyActionNames(ax_ref, None)
+        if err != 0 or not actions or "AXPress" not in actions:
+            return False
+        return AXUIElementPerformAction(ax_ref, "AXPress") == 0
+    except Exception:
+        return False
+
+
 def click_escalation_ax(cp, el: dict, target_pid: int,
                         before_ax_sig: str,
                         reactivate_bundle: Optional[str] = None) -> tuple[bool, str]:
@@ -537,6 +560,10 @@ def detect_elements(target_pid: int) -> list[dict]:
             "parent_id": e.get("parent_id"),
             "parent_label": parent_label,
             "parent_bbox": parent_bbox,
+            # Live AXUIElement for AXPress fast-path; also keep parent's
+            # ref so escalation can try AXPress on the container.
+            "ax_ref": e.get("ax_ref"),
+            "parent_ax_ref": parent.get("ax_ref") if parent else None,
         })
 
     role_priority = {"Button": 0, "Tab": 0, "Link": 1,
@@ -694,7 +721,59 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
         el = next((b for b in boxes if b["id"] == eid), None)
         if not el:
             return f"no element with id {eid}"
+
+        # ----- AXPress fast-path (single-click only) -----
+        # Try the accessibility action first — Electron apps often reject
+        # synthetic mouse events but honor AXPress. Move the visible cursor
+        # ring there so the user sees what we're clicking; then AXPress.
+        if verb == "click" and el.get("ax_ref") is not None:
+            cx0 = el["x"] + el["w"] // 2
+            cy0 = el["y"] + el["h"] // 2
+            cp.move(cx0, cy0)
+            time.sleep(0.1)
+            if ax_press_element(el["ax_ref"]):
+                _log(f"  → AXPress '{el.get('label','')}' (#{eid})")
+                return None
+            # else fall through to mouse click
+
         cx, cy = el["x"] + el["w"] // 2, el["y"] + el["h"] // 2
+        # ----- Icon-row reach-around -----
+        # Narrow AXStaticText labels (e.g. sidebar nav like "漫游" — 28x20)
+        # sit in a hit-zone where the geometric center lands in dead space
+        # between the icon and the text. NeteaseMusic / many Electron sidebars
+        # wire the click handler to the ICON (or the full row), not the text
+        # bbox. If there's an AXImage sibling within 50px on the same row,
+        # shift the click point to span both — i.e. the icon center.
+        if el.get("role") in ("AXStaticText", "StaticText") and el["w"] < 80:
+            sibling_icon = None
+            best_dx = 1e9
+            for b in boxes:
+                if b is el:
+                    continue
+                if b.get("role") not in ("AXImage", "Image", "AXButton", "Button"):
+                    continue
+                # same horizontal band — center y within 10px
+                if abs((b["y"] + b["h"] // 2) - cy) > 10:
+                    continue
+                # to the LEFT of the text, within 50px gap
+                gap = el["x"] - (b["x"] + b["w"])
+                if -4 <= gap <= 50 and gap < best_dx:
+                    best_dx = gap
+                    sibling_icon = b
+            if sibling_icon is not None:
+                # click the icon center — that's the real hit zone
+                cx = sibling_icon["x"] + sibling_icon["w"] // 2
+                cy = sibling_icon["y"] + sibling_icon["h"] // 2
+                _log(f"  → icon-row reach-around: targeting icon "
+                     f"'{sibling_icon.get('label','')}' at ({cx},{cy})")
+                # AXPress on the icon first — Electron sidebars (Netease,
+                # Slack, …) ignore synthetic mouse clicks but honor AXPress.
+                if verb == "click" and sibling_icon.get("ax_ref") is not None:
+                    cp.move(cx, cy)
+                    time.sleep(0.1)
+                    if ax_press_element(sibling_icon["ax_ref"]):
+                        _log(f"    → AXPress on sibling icon succeeded")
+                        return None
         # Always hover-before-click — triggers hover states on Electron/web apps
         if verb == "click":
             hover_then_click(cp, cx, cy)
@@ -802,7 +881,8 @@ def main() -> int:
         # Push to overlay so the user sees the SAME numbered markers that
         # MiniMax is reasoning about. Non-fatal if it fails.
         overlay_boxes = [
-            {**b, "text": f"{b['role']}: {b['label']}", "tier": 3}
+            {k: v for k, v in b.items() if k not in ("ax_ref", "parent_ax_ref")}
+            | {"text": f"{b['role']}: {b['label']}", "tier": 3}
             for b in boxes
         ]
         try:

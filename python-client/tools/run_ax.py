@@ -182,6 +182,9 @@ def walk(elem, out, depth=0, max_depth=80, monitor_origin=(0, 0),
                     "h": h,
                     "depth": depth,
                     "parent_idx": parent_idx,
+                    # Live AXUIElement handle — used by AXPress click path.
+                    # PyObjC retains it through dict reference; cheap to keep.
+                    "ax_ref": elem,
                 })
                 my_idx = len(out) - 1
 
