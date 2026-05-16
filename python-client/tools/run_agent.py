@@ -45,6 +45,16 @@ LOG_FILE: Optional[Path] = None
 # that main() reads. main() must call history.clear() at the top of each run.
 history: list[str] = []
 
+# Multi-step planner state — module-level so the main loop can update and
+# helper functions can read. main() resets both at the top of each run.
+current_subgoal: str = ""
+consec_subgoal_fails: int = 0
+
+# Action-text-based stuck detector (a stronger signal than subgoal-text
+# because the VLM tends to rephrase subgoals while reusing the same action).
+last_action: str = ""
+consec_action_fails: int = 0
+
 
 def _trace_req(method: str, url: str, note: str = "") -> None:
     if TRACE:
@@ -685,6 +695,108 @@ SHELL_WHITELIST = frozenset({
 })
 
 # ---------------------------------------------------------------------------
+# Multi-step planner — sub-goal parsing (worker VLM emits two lines per step)
+# ---------------------------------------------------------------------------
+
+
+def update_subgoal_failure_counter(
+    prev_count: int,
+    prev_subgoal: str,
+    new_subgoal: str,
+    step_failed: bool,
+) -> int:
+    """Return the new consecutive-failure count given last/this sub-goal.
+
+    Rules:
+      • Empty prev_subgoal (first step) treats new_subgoal as continuation —
+        a failure starts the count at 1.
+      • Real sub-goal change (non-empty prev_subgoal differs from new_subgoal)
+        always resets to 0, regardless of step_failed.
+      • Same sub-goal: increment on fail, reset on success.
+    """
+    if prev_subgoal and prev_subgoal != new_subgoal:
+        return 0
+    if step_failed:
+        return prev_count + 1
+    return 0
+
+
+def update_action_failure_counter(
+    prev_count: int,
+    prev_action: str,
+    new_action: str,
+    step_failed: bool,
+) -> int:
+    """Same shape as update_subgoal_failure_counter but keyed on the literal
+    action text. Catches loops where the VLM rephrases sub-goal but emits
+    the same click."""
+    if prev_action and prev_action != new_action:
+        return 1 if step_failed else 0
+    if step_failed:
+        return prev_count + 1
+    return 0
+
+
+def build_action_stuck_warning(action: str, consec_fails: int) -> str:
+    """Warning emitted when the SAME action text fails 3+ times in a row."""
+    if consec_fails < 3:
+        return ""
+    return (
+        f"\n⚠ action {action!r} 已连续 {consec_fails} 步失败（同一动作）。\n"
+        f"必须换不同的 action（不同 id 或不同 verb），或考虑 done。\n"
+    )
+
+
+def build_stuck_warning(subgoal: str, consec_fails: int) -> str:
+    """Return a non-empty warning to splice into the next-step prompt
+    when the VLM is grinding on the same sub-goal."""
+    if consec_fails < 3:
+        return ""
+    return (
+        f"\n⚠ sub-goal {subgoal!r} 已连续 {consec_fails} 步失败。\n"
+        f"必须换一个 sub-goal 描述，或考虑 done（如目标已完成或无法达成）。\n"
+    )
+
+
+def parse_action_with_subgoal(raw: str) -> tuple[str, str]:
+    """Parse the VLM's two-line output.
+
+    Lines:
+        subgoal: <free text>
+        action:  <click 5 | scroll down | ...>
+
+    Tolerates extra noise lines and missing prefixes — getting an action
+    is more important than enforcing the format. Defaults sub-goal to
+    "(unspecified)" when missing.
+    """
+    subgoal = "(unspecified)"
+    action = ""
+    have_sub = False
+    have_act = False
+
+    lines = [ln.strip() for ln in (raw or "").splitlines() if ln.strip()]
+    for ln in lines:
+        lower = ln.lower()
+        if not have_sub and lower.startswith("subgoal:"):
+            subgoal = ln.split(":", 1)[1].strip() or "(unspecified)"
+            have_sub = True
+            continue
+        if not have_act and lower.startswith("action:"):
+            action = ln.split(":", 1)[1].strip()
+            have_act = True
+            continue
+
+    if not action:
+        for ln in lines:
+            if ln.lower().startswith("subgoal:"):
+                continue
+            action = ln.strip()
+            break
+
+    return subgoal, action
+
+
+# ---------------------------------------------------------------------------
 # Goal-aware verification (review the worker VLM's `done` claim)
 # ---------------------------------------------------------------------------
 
@@ -1084,7 +1196,14 @@ SYSTEM_PROMPT = textwrap.dedent("""\
     你是一个能操作 macOS 桌面的自动化 agent。你看到的图片是当前屏幕，
     粉色编号方框是你可以交互的元素（按钮/链接/输入框等）。
 
-    给你一个目标，你每一步从下面挑一个动作输出，**只输出一行**：
+    给你一个目标，你每一步必须输出两行：
+        subgoal: <一句话描述你这一步想完成的子目标>
+        action: <click 5 | scroll down | clipboard write "..." | done ...>
+
+    sub-goal 可以跨步保持不变（推进同一目标），也可以每步换（切换思路）。
+    若 prompt 提示 "sub-goal 连续 N 步失败"，必须换 sub-goal 描述。
+
+    action 行的合法语法（任选一个）:
 
         click <id>          # 点击编号为 id 的元素
         dclick <id>         # 双击
@@ -1102,7 +1221,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
         done <短结论>        # 任务完成或放弃
 
     重要规则：
-      • 只输出一行，没有 markdown、没有解释、没有多余空格。
+      • 严格两行：第一行 subgoal: ...，第二行 action: ...，没有多余行、没有 markdown。
       • 优先 click 真·按钮（圆形 / 实心彩色 / 明显图标），少点装饰文字。
       • 看不清楚就 wait 1。
       • 找不到目标元素时用 `scroll down` 探索；元素清单里已有但部分被截则用 `scroll_to`。
@@ -1149,6 +1268,11 @@ def main() -> int:
     from run_ocr import trigger_system_screenshot  # type: ignore
 
     history.clear()
+    global current_subgoal, consec_subgoal_fails, last_action, consec_action_fails
+    current_subgoal = ""
+    consec_subgoal_fails = 0
+    last_action = ""
+    consec_action_fails = 0
     last_click_xy: Optional[tuple[int, int]] = None
     total_t0 = time.time()
     # Banned points: list of (cx, cy) we clicked but didn't move state. ids are
@@ -1251,11 +1375,13 @@ def main() -> int:
         if banned_xy:
             prompt += f"⚠ 已经点过 {len(banned_xy)} 个位置都没用，换个明显不同的位置\n"
             prompt += "  → 改选更宽的行（role=Row）或换屏幕另一侧的元素\n\n"
+        prompt += build_stuck_warning(current_subgoal, consec_subgoal_fails)
+        prompt += build_action_stuck_warning(last_action, consec_action_fails)
         prompt += (
             "请优先按标签语义匹配目标（如 精选 / 推荐 / play / search 等），"
             "再用图里的位置确认。如果目标是切换 tab，优先选宽行（w>80）"
             "或带文字标签的 Row 元素，**不要选 icon-only 的 Image**。"
-            "只输出一行动作:"
+            "按格式输出两行（subgoal: ... 然后 action: ...）:"
         )
         t0 = time.time()
         try:
@@ -1264,10 +1390,12 @@ def main() -> int:
         except Exception as e:
             _log(f"  ✗ MiniMax failed after retries: {e} — skipping step")
             continue
-        action = raw.strip().splitlines()[0].strip() if raw.strip() else ""
-        # If MiniMax wrapped action in markdown / quotes, strip.
-        action = action.strip("`*\" ").lstrip("➜→- ")
+        subgoal, action_raw = parse_action_with_subgoal(raw)
+        action = action_raw.strip("`*\" ").lstrip("➜→- ")
+        _log(f"  → subgoal: {subgoal!r}")
         _log(f"  MiniMax ({time.time()-t0:.1f}s): {action!r}")
+        prev_subgoal_for_counter = current_subgoal
+        prev_action_for_counter = last_action
 
         # AX semantic signature is rock-solid — invariant to all UI
         # animations / screenshot preview thumbnails / cursor halo.
@@ -1282,7 +1410,21 @@ def main() -> int:
             result = execute(action, boxes)
         except Exception as e:
             _log(f"  ✗ execute crashed: {e}")
-            history.append(f"step {step}: CRASHED {action} ({e})")
+            history.append(f"step {step}: [{subgoal}] CRASHED {action} ({e})")
+            consec_subgoal_fails = update_subgoal_failure_counter(
+                prev_count=consec_subgoal_fails,
+                prev_subgoal=prev_subgoal_for_counter,
+                new_subgoal=subgoal,
+                step_failed=True,
+            )
+            consec_action_fails = update_action_failure_counter(
+                prev_count=consec_action_fails,
+                prev_action=prev_action_for_counter,
+                new_action=action,
+                step_failed=True,
+            )
+            current_subgoal = subgoal
+            last_action = action
             time.sleep(1.0)
             continue
         if result == "DONE":
@@ -1307,20 +1449,66 @@ def main() -> int:
                      f"(total {time.time()-total_t0:.1f}s)")
                 return 0
             history.append(
-                f"step {step}: rejected hallucinated done ({why})"
+                f"step {step}: [{subgoal}] rejected hallucinated done ({why})"
             )
+            # Reject still counts as a same-subgoal failure so the stuck
+            # detector eventually pushes the VLM off a wrong sub-goal.
+            consec_subgoal_fails = update_subgoal_failure_counter(
+                prev_count=consec_subgoal_fails,
+                prev_subgoal=prev_subgoal_for_counter,
+                new_subgoal=subgoal,
+                step_failed=True,
+            )
+            consec_action_fails = update_action_failure_counter(
+                prev_count=consec_action_fails,
+                prev_action=prev_action_for_counter,
+                new_action=action,
+                step_failed=True,
+            )
+            current_subgoal = subgoal
+            last_action = action
             _log(f"  ⚠ done rejected — continuing main loop")
             continue
         if result is not None:
             _log(f"  ✗ {result}")
-            history.append(f"step {step}: FAILED {action} ({result})")
+            history.append(f"step {step}: [{subgoal}] FAILED {action} ({result})")
+            consec_subgoal_fails = update_subgoal_failure_counter(
+                prev_count=consec_subgoal_fails,
+                prev_subgoal=prev_subgoal_for_counter,
+                new_subgoal=subgoal,
+                step_failed=True,
+            )
+            consec_action_fails = update_action_failure_counter(
+                prev_count=consec_action_fails,
+                prev_action=prev_action_for_counter,
+                new_action=action,
+                step_failed=True,
+            )
+            current_subgoal = subgoal
+            last_action = action
+            if consec_subgoal_fails >= 3:
+                _log(f"  ⚠ stuck: subgoal {subgoal!r} failed {consec_subgoal_fails} consecutive steps")
             # If MiniMax wrote unparseable garbage, treat as a "wait 1" and move on
             # rather than burning a step indefinitely.
             if "could not parse" in result or "unknown verb" in result:
                 _log(f"  → falling back to wait 1 to recover")
                 time.sleep(1.0)
         else:
-            history.append(f"step {step}: {action}")
+            history.append(f"step {step}: [{subgoal}] {action} (ok)")
+            consec_subgoal_fails = update_subgoal_failure_counter(
+                prev_count=consec_subgoal_fails,
+                prev_subgoal=prev_subgoal_for_counter,
+                new_subgoal=subgoal,
+                step_failed=False,
+            )
+            consec_action_fails = update_action_failure_counter(
+                prev_count=consec_action_fails,
+                prev_action=prev_action_for_counter,
+                new_action=action,
+                step_failed=False,
+            )
+            current_subgoal = subgoal
+            last_action = action
 
         # Post-click verification — AX-only, no screenshot needed.
         if action.startswith(("click", "dclick", "rclick")) and result is None:
