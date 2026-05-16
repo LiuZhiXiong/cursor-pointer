@@ -667,9 +667,9 @@ def ask_minimax(image_path: Path, prompt: str) -> str:
 ACTION_RE = re.compile(
     r"(?ix)"
     r"(?:^|\b)"
-    r"(?P<verb>click|dclick|rclick|type|key|done|wait)"
+    r"(?P<verb>scroll_to|scroll|click|dclick|rclick|type|key|done|wait)"
     r"\b\s*"
-    r"(?:(?P<arg>\d+|\".+?\"))?",
+    r"(?P<arg>up|down|left|right|\d+|\".+?\")?",
 )
 
 
@@ -689,6 +689,51 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     if verb == "wait":
         time.sleep(float(arg) if arg and arg.isdigit() else 1.5)
         return None
+    if verb == "scroll":
+        # `scroll down` / `scroll up` / `scroll <N>` (positive = down).
+        # Default step = 6 wheel ticks ≈ half a viewport.
+        dy = 0
+        if arg is None:
+            dy = -6
+        elif arg.lower() == "down":
+            dy = -6
+        elif arg.lower() == "up":
+            dy = 6
+        elif arg.isdigit():
+            dy = -int(arg)  # numeric arg = down-by-N
+        else:
+            return f"scroll arg must be up/down/N, got {arg!r}"
+        cp.scroll(dy=dy)
+        return None
+    if verb == "scroll_to":
+        # `scroll_to <id>` — AXScrollToVisible on that element's AX handle.
+        # The accessibility action asks the app to scroll its container so
+        # the target is in-view, regardless of where the cursor is.
+        try:
+            eid = int(arg) if arg else None
+        except ValueError:
+            eid = None
+        if eid is None:
+            return f"scroll_to needs element id, got {arg!r}"
+        el = next((b for b in boxes if b["id"] == eid), None)
+        if not el:
+            return f"no element with id {eid}"
+        ax_ref = el.get("ax_ref")
+        if ax_ref is None:
+            return f"#{eid} has no AX handle — can't scroll_to"
+        try:
+            from ApplicationServices import (  # type: ignore
+                AXUIElementCopyActionNames,
+                AXUIElementPerformAction,
+            )
+            err, actions = AXUIElementCopyActionNames(ax_ref, None)
+            if err == 0 and actions and "AXScrollToVisible" in actions:
+                AXUIElementPerformAction(ax_ref, "AXScrollToVisible")
+                _log(f"  → AXScrollToVisible '{el.get('label','')}' (#{eid})")
+                return None
+        except Exception as e:
+            return f"AXScrollToVisible crashed: {e}"
+        return f"#{eid} does not support AXScrollToVisible"
     if verb == "type":
         # arg via regex is only set when the text was fully quoted. For
         # missing-quote / non-ASCII / multiline content, grab everything after
@@ -798,6 +843,8 @@ SYSTEM_PROMPT = textwrap.dedent("""\
         click <id>          # 点击编号为 id 的元素
         dclick <id>         # 双击
         rclick <id>         # 右键
+        scroll <up|down|N>  # 滚动当前页面（默认半屏向下）
+        scroll_to <id>      # 把编号元素滚到可见区（精准定位视口外目标）
         type "<text>"       # 在当前焦点处输入文字
         key <name>          # 按一个键（如 enter / escape / space / cmd+a）
         wait <seconds>      # 等几秒
@@ -807,6 +854,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
       • 只输出一行，没有 markdown、没有解释、没有多余空格。
       • 优先 click 真·按钮（圆形 / 实心彩色 / 明显图标），少点装饰文字。
       • 看不清楚就 wait 1。
+      • 找不到目标元素时，先 scroll down 探索更多内容，再决定 click。
 """)
 
 
