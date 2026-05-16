@@ -922,7 +922,7 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
             history.append(f"clipboard read → {text[:80]!r}")
             return None
         if sub == "write":
-            m = re.search(r'write\s+"([^"]*)"', action_str, re.IGNORECASE)
+            m = re.search(r'write\s+"([^"]*)"?', action_str, re.IGNORECASE)
             if not m or not m.group(1):
                 return "clipboard write needs quoted text: clipboard write \"...\""
             try:
