@@ -202,3 +202,52 @@ def test_clipboard_bad_subcommand_returns_error():
         result = execute("clipboard reverse", boxes=[])
     assert result is not None
     assert "read" in result.lower()  # message should list valid subs
+
+
+# ---------------------------------------------------------------------------
+# shell verb (whitelisted, read-only)
+# ---------------------------------------------------------------------------
+
+
+def test_shell_whitelist_allows_ls():
+    mock_cp = MagicMock()
+    fake_completed = MagicMock(stdout="file1\nfile2\n", stderr="", returncode=0)
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run", return_value=fake_completed) as mock_run, \
+         patch("run_agent.history", []) as fake_hist:
+        result = execute("shell ls /tmp", boxes=[])
+    assert result is None
+    mock_run.assert_called_once()
+    assert any("shell" in h and "ls" in h for h in fake_hist)
+
+
+def test_shell_blocks_non_whitelisted_command():
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run") as mock_run:
+        result = execute("shell rm -rf /", boxes=[])
+    assert result is not None
+    assert "whitelist" in result.lower() or "rm" in result
+    mock_run.assert_not_called()
+
+
+def test_shell_truncates_long_stdout():
+    mock_cp = MagicMock()
+    huge = "x" * 5000
+    fake_completed = MagicMock(stdout=huge, stderr="", returncode=0)
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run", return_value=fake_completed), \
+         patch("run_agent.history", []) as fake_hist:
+        execute("shell cat /etc/hosts", boxes=[])
+    last = fake_hist[-1]
+    assert len(last) < 500, f"history line too long: {len(last)}"
+
+
+def test_shell_timeout_returns_error():
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run",
+               side_effect=_subprocess.TimeoutExpired(cmd="cat", timeout=8)):
+        result = execute("shell cat /dev/zero", boxes=[])
+    assert result is not None
+    assert "timed out" in result.lower() or "timeout" in result.lower()

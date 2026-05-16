@@ -675,6 +675,16 @@ def ask_minimax(image_path: Path, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shell verb safety — only these commands are allowed. Read-only by design.
+# ---------------------------------------------------------------------------
+
+SHELL_WHITELIST = frozenset({
+    "ls", "cat", "echo", "pwd", "which",
+    "head", "tail", "grep", "find", "file",
+    "wc", "date", "hostname", "whoami",
+})
+
+# ---------------------------------------------------------------------------
 # Goal-aware verification (review the worker VLM's `done` claim)
 # ---------------------------------------------------------------------------
 
@@ -921,6 +931,25 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
                 return f"clipboard write failed: {e}"
             return None
         return f"clipboard needs 'read' or 'write \"...\"', got {sub!r}"
+    if verb == "shell":
+        idx = action_str.lower().find("shell")
+        cmd = action_str[idx + 5:].strip() if idx >= 0 else ""
+        if not cmd:
+            return "shell needs a command"
+        head = cmd.split()[0]
+        if head not in SHELL_WHITELIST:
+            return (f"shell command {head!r} not in whitelist "
+                    f"{sorted(SHELL_WHITELIST)}")
+        try:
+            out = subprocess.run(
+                cmd, shell=True, capture_output=True,
+                text=True, timeout=8,
+            )
+        except subprocess.TimeoutExpired:
+            return f"shell {head!r} timed out (8s)"
+        result_text = (out.stdout or "")[:200].rstrip()
+        history.append(f"shell {head!r} → {result_text!r}")
+        return None
     if verb == "type":
         # arg via regex is only set when the text was fully quoted. For
         # missing-quote / non-ASCII / multiline content, grab everything after
