@@ -204,6 +204,17 @@ def test_clipboard_bad_subcommand_returns_error():
     assert "read" in result.lower()  # message should list valid subs
 
 
+def test_clipboard_write_accepts_missing_close_quote():
+    """Real-world: MiniMax sometimes drops the closing quote.
+    The regex was relaxed to `"([^"]*)"?` to accept that — this test
+    pins the behavior so it doesn't regress."""
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp):
+        result = execute('clipboard write "hostname-no-close-quote', boxes=[])
+    assert result is None
+    mock_cp.clipboard_set.assert_called_once_with("hostname-no-close-quote")
+
+
 # ---------------------------------------------------------------------------
 # shell verb (whitelisted, read-only)
 # ---------------------------------------------------------------------------
