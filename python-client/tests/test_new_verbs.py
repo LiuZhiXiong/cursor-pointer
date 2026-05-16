@@ -304,3 +304,48 @@ def test_app_osascript_failure_falls_back_to_open_a():
         result = execute("app SomeWeirdApp", boxes=[])
     assert result is None
     assert call_count["n"] == 2  # osascript then open
+
+
+def test_shell_blocks_command_injection_via_semicolon():
+    """Critical safety regression: `shell grep; rm -rf /` must NOT execute
+    the rm. The whitelist sees `grep` (allowed), but shell=True would
+    happily run the `; rm` half. Switching to shell=False+shlex prevents this."""
+    mock_cp = MagicMock()
+    executed_cmds = []
+
+    def record_run(cmd, **kw):
+        executed_cmds.append(cmd)
+        # Simulate subprocess running successfully
+        return MagicMock(stdout="", stderr="", returncode=0)
+
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run", side_effect=record_run), \
+         patch("run_agent.history", []):
+        result = execute("shell grep; rm -rf /", boxes=[])
+    # Implementation freedom: either it errors out (semicolon is a literal
+    # arg that grep won't like) or runs grep with literal args that include
+    # the semicolon. EITHER WAY, `rm` must NEVER appear as an executable.
+    for cmd in executed_cmds:
+        if isinstance(cmd, list):
+            assert cmd[0] != "rm", f"rm executed: {cmd}"
+            # No element of the argv should be a shell metachar interpreted as separator
+        elif isinstance(cmd, str):
+            # If anyone ever switches BACK to shell=True, this assertion catches it.
+            assert "rm" not in cmd or "shell=True" not in str(kw), \
+                f"raw shell exec with rm: {cmd}"
+
+
+def test_shell_uses_argv_list_not_shell_string():
+    """The implementation should pass argv as a LIST to subprocess.run,
+    with shell=False (default). This is what prevents the injection."""
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        execute("shell ls /tmp", boxes=[])
+    args, kwargs = mock_run.call_args
+    cmd_arg = args[0]
+    assert isinstance(cmd_arg, list), f"expected list argv, got {type(cmd_arg).__name__}: {cmd_arg!r}"
+    assert cmd_arg[0] == "ls"
+    assert "/tmp" in cmd_arg
+    assert kwargs.get("shell", False) is False

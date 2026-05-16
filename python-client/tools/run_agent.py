@@ -953,21 +953,30 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
             return None
         return f"clipboard needs 'read' or 'write \"...\"', got {sub!r}"
     if verb == "shell":
+        import shlex
         idx = action_str.lower().find("shell")
-        cmd = action_str[idx + 5:].strip() if idx >= 0 else ""
-        if not cmd:
+        raw = action_str[idx + 5:].strip() if idx >= 0 else ""
+        if not raw:
             return "shell needs a command"
-        head = cmd.split()[0]
+        try:
+            argv = shlex.split(raw)
+        except ValueError as e:
+            return f"shell could not parse {raw!r}: {e}"
+        if not argv:
+            return "shell needs a command"
+        head = argv[0]
         if head not in SHELL_WHITELIST:
             return (f"shell command {head!r} not in whitelist "
                     f"{sorted(SHELL_WHITELIST)}")
         try:
             out = subprocess.run(
-                cmd, shell=True, capture_output=True,
-                text=True, timeout=8,
+                argv,
+                capture_output=True, text=True, timeout=8,
             )
         except subprocess.TimeoutExpired:
             return f"shell {head!r} timed out (8s)"
+        except FileNotFoundError:
+            return f"shell {head!r} not found on PATH"
         result_text = (out.stdout or "")[:200].rstrip()
         history.append(f"shell {head!r} → {result_text!r}")
         return None
