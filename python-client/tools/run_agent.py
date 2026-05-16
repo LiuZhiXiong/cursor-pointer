@@ -50,6 +50,11 @@ history: list[str] = []
 current_subgoal: str = ""
 consec_subgoal_fails: int = 0
 
+# Action-text-based stuck detector (a stronger signal than subgoal-text
+# because the VLM tends to rephrase subgoals while reusing the same action).
+last_action: str = ""
+consec_action_fails: int = 0
+
 
 def _trace_req(method: str, url: str, note: str = "") -> None:
     if TRACE:
@@ -716,6 +721,32 @@ def update_subgoal_failure_counter(
     return 0
 
 
+def update_action_failure_counter(
+    prev_count: int,
+    prev_action: str,
+    new_action: str,
+    step_failed: bool,
+) -> int:
+    """Same shape as update_subgoal_failure_counter but keyed on the literal
+    action text. Catches loops where the VLM rephrases sub-goal but emits
+    the same click."""
+    if prev_action and prev_action != new_action:
+        return 1 if step_failed else 0
+    if step_failed:
+        return prev_count + 1
+    return 0
+
+
+def build_action_stuck_warning(action: str, consec_fails: int) -> str:
+    """Warning emitted when the SAME action text fails 3+ times in a row."""
+    if consec_fails < 3:
+        return ""
+    return (
+        f"\n⚠ action {action!r} 已连续 {consec_fails} 步失败（同一动作）。\n"
+        f"必须换不同的 action（不同 id 或不同 verb），或考虑 done。\n"
+    )
+
+
 def build_stuck_warning(subgoal: str, consec_fails: int) -> str:
     """Return a non-empty warning to splice into the next-step prompt
     when the VLM is grinding on the same sub-goal."""
@@ -1237,9 +1268,11 @@ def main() -> int:
     from run_ocr import trigger_system_screenshot  # type: ignore
 
     history.clear()
-    global current_subgoal, consec_subgoal_fails
+    global current_subgoal, consec_subgoal_fails, last_action, consec_action_fails
     current_subgoal = ""
     consec_subgoal_fails = 0
+    last_action = ""
+    consec_action_fails = 0
     last_click_xy: Optional[tuple[int, int]] = None
     total_t0 = time.time()
     # Banned points: list of (cx, cy) we clicked but didn't move state. ids are
@@ -1343,6 +1376,7 @@ def main() -> int:
             prompt += f"⚠ 已经点过 {len(banned_xy)} 个位置都没用，换个明显不同的位置\n"
             prompt += "  → 改选更宽的行（role=Row）或换屏幕另一侧的元素\n\n"
         prompt += build_stuck_warning(current_subgoal, consec_subgoal_fails)
+        prompt += build_action_stuck_warning(last_action, consec_action_fails)
         prompt += (
             "请优先按标签语义匹配目标（如 精选 / 推荐 / play / search 等），"
             "再用图里的位置确认。如果目标是切换 tab，优先选宽行（w>80）"
@@ -1361,6 +1395,7 @@ def main() -> int:
         _log(f"  → subgoal: {subgoal!r}")
         _log(f"  MiniMax ({time.time()-t0:.1f}s): {action!r}")
         prev_subgoal_for_counter = current_subgoal
+        prev_action_for_counter = last_action
 
         # AX semantic signature is rock-solid — invariant to all UI
         # animations / screenshot preview thumbnails / cursor halo.
@@ -1382,7 +1417,14 @@ def main() -> int:
                 new_subgoal=subgoal,
                 step_failed=True,
             )
+            consec_action_fails = update_action_failure_counter(
+                prev_count=consec_action_fails,
+                prev_action=prev_action_for_counter,
+                new_action=action,
+                step_failed=True,
+            )
             current_subgoal = subgoal
+            last_action = action
             time.sleep(1.0)
             continue
         if result == "DONE":
@@ -1417,7 +1459,14 @@ def main() -> int:
                 new_subgoal=subgoal,
                 step_failed=True,
             )
+            consec_action_fails = update_action_failure_counter(
+                prev_count=consec_action_fails,
+                prev_action=prev_action_for_counter,
+                new_action=action,
+                step_failed=True,
+            )
             current_subgoal = subgoal
+            last_action = action
             _log(f"  ⚠ done rejected — continuing main loop")
             continue
         if result is not None:
@@ -1429,7 +1478,14 @@ def main() -> int:
                 new_subgoal=subgoal,
                 step_failed=True,
             )
+            consec_action_fails = update_action_failure_counter(
+                prev_count=consec_action_fails,
+                prev_action=prev_action_for_counter,
+                new_action=action,
+                step_failed=True,
+            )
             current_subgoal = subgoal
+            last_action = action
             if consec_subgoal_fails >= 3:
                 _log(f"  ⚠ stuck: subgoal {subgoal!r} failed {consec_subgoal_fails} consecutive steps")
             # If MiniMax wrote unparseable garbage, treat as a "wait 1" and move on
@@ -1445,7 +1501,14 @@ def main() -> int:
                 new_subgoal=subgoal,
                 step_failed=False,
             )
+            consec_action_fails = update_action_failure_counter(
+                prev_count=consec_action_fails,
+                prev_action=prev_action_for_counter,
+                new_action=action,
+                step_failed=False,
+            )
             current_subgoal = subgoal
+            last_action = action
 
         # Post-click verification — AX-only, no screenshot needed.
         if action.startswith(("click", "dclick", "rclick")) and result is None:

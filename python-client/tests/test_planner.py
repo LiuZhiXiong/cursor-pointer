@@ -112,3 +112,44 @@ def test_stuck_warning_at_threshold():
 def test_stuck_warning_above_threshold():
     out = build_stuck_warning(subgoal="X", consec_fails=5)
     assert "5" in out
+
+
+# ---------------------------------------------------------------------------
+# action-level stuck detector
+# ---------------------------------------------------------------------------
+
+from run_agent import update_action_failure_counter, build_action_stuck_warning
+
+
+def test_action_counter_increments_on_repeated_failed_action():
+    new_count = update_action_failure_counter(
+        prev_count=2, prev_action="click 13", new_action="click 13",
+        step_failed=True,
+    )
+    assert new_count == 3
+
+
+def test_action_counter_resets_on_success():
+    new_count = update_action_failure_counter(
+        prev_count=2, prev_action="click 13", new_action="click 13",
+        step_failed=False,
+    )
+    assert new_count == 0
+
+
+def test_action_counter_resets_on_different_action():
+    new_count = update_action_failure_counter(
+        prev_count=2, prev_action="click 13", new_action="click 14",
+        step_failed=True,
+    )
+    assert new_count == 1  # different action → counter restarts from 1 since it failed
+
+
+def test_action_stuck_warning_at_threshold():
+    out = build_action_stuck_warning(action="click 13", consec_fails=3)
+    assert "click 13" in out
+    assert "3" in out
+
+
+def test_action_stuck_warning_empty_below_threshold():
+    assert build_action_stuck_warning(action="click 13", consec_fails=2) == ""
