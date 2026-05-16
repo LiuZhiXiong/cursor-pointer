@@ -103,9 +103,15 @@ def _str(v) -> str:
     if isinstance(v, str):
         return v
     try:
-        return str(v)
+        s = str(v)
     except Exception:
         return ""
+    # PyObjC's str() on opaque AXUIElement objects includes the pointer
+    # address, which is non-deterministic across reads. That breaks every
+    # AX-based caching/hashing scheme. Reject it.
+    if s.startswith("<AXUIElement") or s.startswith("<AXValue"):
+        return ""
+    return s
 
 
 def _point_size(elem):
