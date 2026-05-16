@@ -131,6 +131,41 @@ pub fn key_toggle(key: &str, press: bool) -> Result<()> {
     e.key(k, dir).map_err(|err| InputError::Op(err.to_string()))
 }
 
+pub fn clipboard_get() -> Result<String> {
+    let out = std::process::Command::new("/usr/bin/pbpaste")
+        .output()
+        .map_err(|e| InputError::Op(format!("pbpaste spawn: {}", e)))?;
+    if !out.status.success() {
+        return Err(InputError::Op(format!(
+            "pbpaste exited {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+pub fn clipboard_set(text: &str) -> Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("/usr/bin/pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| InputError::Op(format!("pbcopy spawn: {}", e)))?;
+    child
+        .stdin
+        .as_mut()
+        .ok_or_else(|| InputError::Op("pbcopy stdin missing".into()))?
+        .write_all(text.as_bytes())
+        .map_err(|e| InputError::Op(format!("pbcopy write: {}", e)))?;
+    let status = child
+        .wait()
+        .map_err(|e| InputError::Op(format!("pbcopy wait: {}", e)))?;
+    if !status.success() {
+        return Err(InputError::Op(format!("pbcopy exited {}", status)));
+    }
+    Ok(())
+}
+
 /// Parse a key name to enigo's `Key`.
 ///
 /// Important: on macOS, `Key::Unicode(c)` resolves the character to a virtual
