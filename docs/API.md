@@ -8,8 +8,8 @@ Backed by [`api.rs`](../src-tauri/src/api.rs).
 
 | | |
 |---|---|
-| Pass | 20 |
-| Fail | 1 (Screen Recording permission needed — see [Permissions](#permissions)) |
+| Pass | 21 |
+| Fail | 0 |
 | Skipped (destructive) | 1 (`/_window/quit`) |
 
 All endpoints respond with JSON unless noted. `Content-Type: application/json`
@@ -32,8 +32,8 @@ on requests. CORS allows `*` for cross-origin browser callers.
 | POST | `/keyboard/key`              | press a named key (with modifiers)  | ✓ |
 | POST | `/keyboard/down`             | hold a key down                     | ✓ |
 | POST | `/keyboard/up`               | release a held key                  | ✓ |
-| GET  | `/screen/screenshot`         | xcap screenshot (PNG / base64 JSON) | ⚠ wallpaper-only on macOS 26 |
-| GET  | `/screen/screenshot_native`  | macOS `screencapture` CLI shell-out | ✗ permission-gated |
+| GET  | `/screen/screenshot`         | xcap screenshot (PNG / base64 JSON) | ✓ (needs Screen Recording) |
+| GET  | `/screen/screenshot_native`  | macOS `screencapture` CLI shell-out | ✓ (needs Screen Recording) |
 | GET  | `/screen/monitors`           | monitor list + scale factors        | ✓ |
 | GET  | `/_fx/next?since=N`          | long-poll fx-event queue            | ✓ |
 | POST | `/_window/minimize`          | minimize floating control window    | ✓ |
@@ -129,19 +129,32 @@ Query: `?format=png` for raw bytes; otherwise JSON with base64.
 - `format=png` → `Content-Type: image/png`, body = PNG bytes
 - (default)    → `{ "width": int, "height": int, "image": "data:image/png;base64,…" }`
 
-> **macOS 26 limitation**: xcap only captures windows owned by cursor-pointer
-> plus the wallpaper. Third-party app windows (Chrome, iTerm, NeteaseMusic…)
-> appear missing. The agent works around this by triggering `⌘⇧3` (system
-> screenshot) — that goes through a different path that doesn't require
-> Screen Recording permission.
+> **Requires Screen Recording** (System Settings → Privacy & Security →
+> Screen Recording → enable the CursorPointer.app). Without that grant,
+> macOS returns wallpaper-only frames. macOS TCC binds the grant by
+> binary cdhash — every cursor-pointer rebuild invalidates the grant, so
+> run the bundled release `.app` for stable permission, not the dev
+> binary. After a rebuild: `tccutil reset ScreenCapture com.cursorpointer.app`
+> and re-add it in System Settings.
+>
+> The agent has a parallel path: it triggers `⌘⇧3` (system screenshot)
+> via `/keyboard/key` and reads the resulting Desktop file. That doesn't
+> need Screen Recording on the calling app — useful before permissions
+> are set up.
 
 ### `GET /screen/screenshot_native`
 Returns image bytes from `/usr/sbin/screencapture -x -C -t png`.
 
 > **Permission-gated**: returns `500 { "error": "screencapture failed: could not create image from display" }`
-> unless cursor-pointer (or the parent process spawned it) is granted Screen
-> Recording in System Settings → Privacy & Security. Add the cursor-pointer
-> `.app` bundle there, then restart cursor-pointer.
+> unless CursorPointer.app is granted Screen Recording. Same grant as
+> `/screen/screenshot` above. After a rebuild, cdhash changes and the
+> grant becomes stale — log shows
+> `Failed to match existing code requirement for subject com.cursorpointer.app`.
+> Fix:
+> ```bash
+> tccutil reset ScreenCapture com.cursorpointer.app
+> ```
+> then re-add the app in System Settings.
 
 ### `GET /screen/monitors`
 → `[ { "index": 0, "name": "...", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale_factor": 2.0 }, … ]`
@@ -210,16 +223,28 @@ Hard-coded venv path: `/Users/liuzhixiong/coding-project/cursor-pointer/python-c
 
 ## Permissions {#permissions}
 
-cursor-pointer needs three macOS privacy grants:
+cursor-pointer needs **four** macOS privacy grants. All of them are bound by
+**cdhash** — every release rebuild produces a new cdhash and invalidates the
+old grants even though the System Settings UI still shows the toggle as on.
 
 | Grant | For | Where |
 |---|---|---|
-| **Accessibility** | reading AX tree from third-party apps (NeteaseMusic, Chrome, …) | System Settings → Privacy & Security → Accessibility |
-| **Screen Recording** | `screencapture` shell-out + xcap visibility into other apps' windows | System Settings → Privacy & Security → Screen Recording |
-| **Automation** (auto-prompted) | `osascript tell application … to activate` for re-focusing target apps | first time you trigger it |
+| **Accessibility** | reading AX tree (sidebar items, buttons, labels) from third-party apps | Privacy & Security → Accessibility |
+| **Input Monitoring** (`kTCCServicePostEvent`) | synthesizing mouse moves / clicks / keystrokes into other apps | granted implicitly when Accessibility is granted; tccutil key is `PostEvent` |
+| **Screen Recording** | `/screen/screenshot` (xcap) and `/screen/screenshot_native` seeing other apps' windows | Privacy & Security → Screen Recording |
+| **Automation** (auto-prompted) | `osascript tell application … to activate` for re-focusing target apps | popup on first use |
 
-If `screencapture_native` fails or `/screen/screenshot` shows only the wallpaper,
-you're missing Screen Recording.
+If a once-working endpoint suddenly fails after rebuild, check `Console.app`
+or `/usr/bin/log show --predicate 'eventMessage CONTAINS "kTCCService"' --last 1m`
+for `Failed to match existing code requirement for subject com.cursorpointer.app`.
+Cure:
+
+```bash
+tccutil reset ScreenCapture com.cursorpointer.app
+tccutil reset PostEvent com.cursorpointer.app
+tccutil reset Accessibility com.cursorpointer.app
+# then re-add the .app in System Settings → Privacy & Security
+```
 
 For the **agent** (`python-client/tools/run_agent.py`), the Python interpreter
 itself must have Accessibility too — that's a separate grant for the binary
