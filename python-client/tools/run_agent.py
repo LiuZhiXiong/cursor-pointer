@@ -771,9 +771,9 @@ def verify_done(goal: str, done_reason: str, target_pid: int,
 ACTION_RE = re.compile(
     r"(?ix)"
     r"(?:^|\b)"
-    r"(?P<verb>scroll_to|scroll|click|dclick|rclick|type|key|done|wait)"
+    r"(?P<verb>scroll_to|scroll|click|dclick|rclick|drag|app|clipboard|shell|type|key|done|wait)"
     r"\b\s*"
-    r"(?P<arg>up|down|left|right|\d+|\".+?\")?",
+    r"(?P<arg>up|down|left|right|read|write|\d+|\".+?\")?",
 )
 
 
