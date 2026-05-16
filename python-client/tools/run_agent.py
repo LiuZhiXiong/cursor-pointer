@@ -27,6 +27,15 @@ from typing import Optional
 
 import requests
 
+# Eager-imported alias so tests can patch `run_agent.trigger_system_screenshot`
+# without having to dig into run_ocr. Production code already does this lazy
+# import in several places; we just hoist a module-level reference.
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from run_ocr import trigger_system_screenshot  # type: ignore  # noqa: E402
+except Exception:
+    trigger_system_screenshot = None  # type: ignore
+
 API = "http://127.0.0.1:39213"
 TRACE = os.environ.get("CURSOR_POINTER_TRACE") == "1"
 LOG_FILE: Optional[Path] = None
@@ -661,6 +670,101 @@ def ask_minimax(image_path: Path, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Goal-aware verification (review the worker VLM's `done` claim)
+# ---------------------------------------------------------------------------
+
+REVIEW_PROMPT = """你是一个验收员。Agent 刚才报告任务完成，你要核实。
+
+原始目标：{goal}
+Agent 的完成理由：{done_reason}
+
+当前屏幕（图）和可交互元素清单：
+{elements}
+
+判断：当前屏幕状态是否真正达成原始目标？
+
+输出格式（严格两行）：
+verdict: ok | reject
+why: <一句话>
+"""
+
+
+def parse_verdict(raw: str) -> tuple[str, str]:
+    """Parse the reviewer VLM's two-line response.
+
+    Default-to-reject on any ambiguity — fail-safe against hallucinated
+    `verdict: ok` lines from a confused reviewer.
+    """
+    verdict = "reject"
+    why = (raw or "").strip()[:120]
+    for line in (raw or "").splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("verdict:"):
+            value = stripped.split(":", 1)[1].strip().lower()
+            if value.startswith("ok"):
+                verdict = "ok"
+            elif value.startswith("reject"):
+                verdict = "reject"
+        elif lower.startswith("why:"):
+            why = stripped.split(":", 1)[1].strip()[:200]
+    return verdict, why
+
+
+def verify_done(goal: str, done_reason: str, target_pid: int,
+                ask_minimax) -> tuple[str, str]:
+    """Re-ground a `done` claim against fresh screen state.
+
+    Returns ("ok", why) only if the reviewer VLM confirms the goal is
+    truly achieved. Any failure (screenshot timeout, mmx crash, garbage
+    output) returns ("reject", why) — fail-safe.
+    """
+    try:
+        if trigger_system_screenshot is None:
+            raise RuntimeError("trigger_system_screenshot unavailable")
+        png = trigger_system_screenshot()
+    except Exception as e:
+        return "reject", f"screenshot failed: {e}"
+
+    try:
+        boxes = detect_elements(target_pid)
+    except Exception as e:
+        return "reject", f"element detection failed: {e}"
+
+    try:
+        mons = requests.get(f"{API}/screen/monitors", timeout=3).json()
+        scale = float(mons[0]["scale_factor"] or 2.0)
+    except Exception:
+        scale = 2.0
+
+    try:
+        annotated = annotate(png, boxes, scale=scale)
+    except Exception as e:
+        return "reject", f"annotation failed: {e}"
+
+    elem_lines = []
+    for b in boxes[:60]:
+        parent_part = f"  ⊂ {b['parent_label']}" if b.get("parent_label") else ""
+        elem_lines.append(
+            f"  #{b['id']:>3}  {b['role']:14}  '{b['label']}'  ({b['w']}x{b['h']}){parent_part}"
+        )
+    elements_block = "\n".join(elem_lines) if elem_lines else "(none)"
+
+    prompt = REVIEW_PROMPT.format(
+        goal=goal,
+        done_reason=done_reason or "(未提供)",
+        elements=elements_block,
+    )
+
+    try:
+        raw = ask_minimax(annotated, prompt)
+    except Exception as e:
+        return "reject", f"reviewer exception: {e}"
+
+    return parse_verdict(raw)
+
+
+# ---------------------------------------------------------------------------
 # Action parsing / execution
 # ---------------------------------------------------------------------------
 
@@ -1046,8 +1150,31 @@ def main() -> int:
             time.sleep(1.0)
             continue
         if result == "DONE":
-            _log(f"\n✓ done: {action}  (total {time.time()-total_t0:.1f}s)")
-            return 0
+            if os.environ.get("CURSOR_POINTER_VERIFY", "1") == "0":
+                _log(f"\n✓ done: {action}  (verifier disabled)  "
+                     f"(total {time.time()-total_t0:.1f}s)")
+                return 0
+            done_reason = action[len("done"):].strip().lstrip(":：") if action.lower().startswith("done") else ""
+            _log(f"  → reviewing done claim: '{done_reason}'")
+            try:
+                verdict, why = verify_done(
+                    goal=goal,
+                    done_reason=done_reason,
+                    target_pid=initial_pid,
+                    ask_minimax=ask_minimax,
+                )
+            except Exception as e:
+                verdict, why = "reject", f"verifier crashed: {e}"
+            _log(f"  → reviewer verdict={verdict} why='{why}'")
+            if verdict == "ok":
+                _log(f"\n✓ done verified: {action}  ({why})  "
+                     f"(total {time.time()-total_t0:.1f}s)")
+                return 0
+            history.append(
+                f"step {step}: rejected hallucinated done ({why})"
+            )
+            _log(f"  ⚠ done rejected — continuing main loop")
+            continue
         if result is not None:
             _log(f"  ✗ {result}")
             history.append(f"step {step}: FAILED {action} ({result})")

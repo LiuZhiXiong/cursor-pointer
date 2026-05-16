@@ -1,0 +1,55 @@
+✓ preflight ok (cursor-pointer + mmx + AX permission)
+agent target app: 网易云音乐 (pid 4473, bundle com.netease.163music)
+goal: '向下滚动网易云首页，直到看到「热歌榜」或「主播电台」这类下方板块'
+log file: /tmp/agent_20260517_000013.log
+
+
+── step 1/6 ──
+  main window: (70,134) 1058x752
+  multi-pass (3): kept 1370 stable, dropped 7 flickers
+  AX: 91 clickable leaves
+  MiniMax (6.1s): 'scroll down'
+  → scroll anchor (422,427) dy=-6
+  step took 17.2s
+
+── step 2/6 ──
+  main window: (70,134) 1058x752
+  multi-pass (3): kept 1377 stable, dropped 0 flickers
+  AX: 91 clickable leaves
+  MiniMax (5.9s): 'scroll down'
+  → scroll anchor (422,427) dy=-6
+  step took 17.1s
+
+── step 3/6 ──
+  main window: (70,134) 1058x752
+  multi-pass (3): kept 1377 stable, dropped 0 flickers
+  AX: 91 clickable leaves
+  MiniMax (6.2s): 'scroll down'
+  → scroll anchor (422,427) dy=-6
+  step took 17.3s
+
+── step 4/6 ──
+  main window: (70,134) 1058x752
+  multi-pass (3): kept 1377 stable, dropped 0 flickers
+  AX: 91 clickable leaves
+  MiniMax (5.9s): 'scroll down'
+  → scroll anchor (422,427) dy=-6
+  step took 17.2s
+
+── step 5/6 ──
+  main window: (70,134) 1058x752
+  multi-pass (3): kept 1377 stable, dropped 0 flickers
+  AX: 91 clickable leaves
+  MiniMax (5.3s): 'scroll down'
+  → scroll anchor (422,427) dy=-6
+  step took 16.6s
+
+── step 6/6 ──
+  main window: (70,134) 1058x752
+  multi-pass (3): kept 1377 stable, dropped 0 flickers
+  AX: 91 clickable leaves
+  MiniMax (5.5s): 'scroll down'
+  → scroll anchor (422,427) dy=-6
+  step took 16.8s
+
+⚠ stopped after 6 steps  (total 102.1s)
