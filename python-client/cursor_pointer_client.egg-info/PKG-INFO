@@ -1,0 +1,41 @@
+Metadata-Version: 2.4
+Name: cursor-pointer-client
+Version: 0.1.0
+Summary: Python client SDK for the CursorPointer macOS desktop control daemon
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: requests>=2.31
+Provides-Extra: ocr
+Requires-Dist: pillow>=10.0; extra == "ocr"
+Requires-Dist: rapidocr-onnxruntime>=1.3; extra == "ocr"
+Requires-Dist: numpy>=1.26; extra == "ocr"
+Provides-Extra: agent
+Requires-Dist: pillow>=10.0; extra == "agent"
+Requires-Dist: rapidocr-onnxruntime>=1.3; extra == "agent"
+Requires-Dist: numpy>=1.26; extra == "agent"
+
+# cursor-pointer-client
+
+Python SDK for the [CursorPointer](../) desktop daemon.
+
+```bash
+pip install -e .          # core
+pip install -e ".[ocr]"   # with OCR demo deps (RapidOCR + Pillow)
+```
+
+```python
+from cursor_pointer import CursorPointer
+
+cp = CursorPointer()           # http://127.0.0.1:39213 by default
+assert cp.health()["ok"]
+cp.move(400, 300)
+cp.click()                     # left click at current position
+cp.click(500, 400, button="right")
+cp.double_click(120, 80)
+cp.scroll(dy=-5)               # 5 ticks down
+cp.type_text("hello, world")
+cp.hotkey("cmd", "a")          # ⌘A
+png = cp.screenshot()          # PNG bytes
+```
+
+See `examples/ocr_click.py` for a full OCR-driven click demo.

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CursorPointer</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="panel">
+      <div class="compact-view">
+        <span class="compact-dot"></span>
+        <span class="compact-pos" id="compact-pos">—, —</span>
+      </div>
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>
+          <span class="logo" data-tauri-drag-region></span>
+          <span class="name" data-tauri-drag-region>CursorPointer</span>
+        </div>
+        <div class="actions">
+          <button class="icon-btn" id="btn-min" title="Minimize">—</button>
+          <button class="icon-btn close" id="btn-close" title="Quit">×</button>
+        </div>
+      </header>
+
+      <section class="body">
+        <div class="status-row">
+          <span class="dot" id="dot"></span>
+          <span id="status-text">connecting…</span>
+        </div>
+
+        <div class="kv">
+          <label>API</label>
+          <code id="endpoint">http://127.0.0.1:39213</code>
+        </div>
+
+        <div class="kv">
+          <label>Cursor</label>
+          <code id="pos">(?, ?)</code>
+        </div>
+
+        <div class="buttons">
+          <button id="btn-pick">Pick & Click</button>
+          <button id="btn-copy">Copy API URL</button>
+        </div>
+        <div class="buttons">
+          <button id="btn-ocr">OCR 标注 · OFF</button>
+        </div>
+
+        <p class="hint">
+          Grant <b>Accessibility</b> & <b>Screen Recording</b> permissions in
+          System Settings → Privacy & Security.
+        </p>
+      </section>
+    </div>
+
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,11 @@
+README.md
+pyproject.toml
+cursor_pointer/__init__.py
+cursor_pointer/annotate.py
+cursor_pointer/client.py
+cursor_pointer/session.py
+cursor_pointer_client.egg-info/PKG-INFO
+cursor_pointer_client.egg-info/SOURCES.txt
+cursor_pointer_client.egg-info/dependency_links.txt
+cursor_pointer_client.egg-info/requires.txt
+cursor_pointer_client.egg-info/top_level.txt

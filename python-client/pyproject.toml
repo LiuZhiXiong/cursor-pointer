@@ -1,0 +1,28 @@
+[project]
+name = "cursor-pointer-client"
+version = "0.1.0"
+description = "Python client SDK for the CursorPointer macOS desktop control daemon"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+ocr = [
+  "pillow>=10.0",
+  "rapidocr-onnxruntime>=1.3",
+  "numpy>=1.26",
+]
+agent = [
+  "pillow>=10.0",
+  "rapidocr-onnxruntime>=1.3",
+  "numpy>=1.26",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["cursor_pointer*"]

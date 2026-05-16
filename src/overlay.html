@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>CursorPointer Overlay</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        pointer-events: none;
+        cursor: none;
+      }
+      #ring {
+        position: fixed;
+        width: 28px;
+        height: 28px;
+        margin-left: -14px;
+        margin-top: -14px;
+        border-radius: 50%;
+        border: 2px solid rgba(110, 155, 255, 0.85);
+        box-shadow:
+          0 0 12px rgba(110, 155, 255, 0.65),
+          inset 0 0 6px rgba(110, 155, 255, 0.45);
+        background: rgba(110, 155, 255, 0.04);
+        will-change: transform;
+        transform: translate3d(-200px, -200px, 0);
+        transition: transform 60ms linear;
+      }
+      .ocrbox {
+        position: fixed;
+        border-radius: 4px;
+        pointer-events: none;
+        font-family: -apple-system, "SF Mono", sans-serif;
+      }
+      .ocrbox > .ocrtag {
+        position: absolute;
+        top: -16px;
+        left: 0;
+        font-weight: 700;
+        color: white;
+        padding: 1px 5px;
+        border-radius: 3px 3px 3px 0;
+        white-space: nowrap;
+        line-height: 1.2;
+        text-shadow: 0 1px 1px rgba(0, 0, 0, 0.45);
+      }
+      /* ----- tiered visualization ----- */
+      /* Tier 1 — gold (all sources agree): bold red, large tag */
+      .ocrbox.tier1 {
+        border: 3px solid #ef4444;
+        background: rgba(239, 68, 68, 0.10);
+        box-shadow: 0 0 12px rgba(239, 68, 68, 0.7);
+      }
+      .ocrbox.tier1 > .ocrtag {
+        background: #ef4444;
+        font-size: 13px;
+        padding: 2px 7px;
+        top: -19px;
+      }
+      /* Tier 2 — silver (AX + OCR): solid blue, medium tag */
+      .ocrbox.tier2 {
+        border: 2px solid #3b82f6;
+        background: rgba(59, 130, 246, 0.08);
+        box-shadow: 0 0 6px rgba(59, 130, 246, 0.45);
+      }
+      .ocrbox.tier2 > .ocrtag {
+        background: #3b82f6;
+        font-size: 11px;
+      }
+      /* Tier 3 — AX only: thin neutral, smaller tag */
+      .ocrbox.tier3 {
+        border: 1px solid rgba(140, 140, 160, 0.85);
+        background: rgba(140, 140, 160, 0.05);
+      }
+      .ocrbox.tier3 > .ocrtag {
+        background: rgba(100, 100, 120, 0.9);
+        font-size: 9px;
+        padding: 0px 4px;
+        top: -13px;
+      }
+      /* Tier 4 — OCR/visual only: dashed thin, faintest */
+      .ocrbox.tier4 {
+        border: 1px dashed rgba(160, 130, 200, 0.7);
+        background: rgba(160, 130, 200, 0.04);
+      }
+      .ocrbox.tier4 > .ocrtag {
+        background: rgba(120, 90, 160, 0.85);
+        font-size: 9px;
+        padding: 0px 4px;
+        top: -13px;
+      }
+      .ripple {
+        position: fixed;
+        border-radius: 50%;
+        pointer-events: none;
+        margin-left: -6px;
+        margin-top: -6px;
+        width: 12px;
+        height: 12px;
+        animation: ripple-out 650ms ease-out forwards;
+      }
+      .ripple.left {
+        border: 3px solid rgba(80, 220, 120, 0.95);
+        box-shadow: 0 0 18px rgba(80, 220, 120, 0.6);
+      }
+      .ripple.right {
+        border: 3px solid rgba(255, 90, 90, 0.95);
+        box-shadow: 0 0 18px rgba(255, 90, 90, 0.6);
+      }
+      .ripple.middle {
+        border: 3px solid rgba(255, 200, 60, 0.95);
+        box-shadow: 0 0 18px rgba(255, 200, 60, 0.6);
+      }
+      @keyframes ripple-out {
+        0% {
+          width: 12px;
+          height: 12px;
+          opacity: 1;
+          margin-left: -6px;
+          margin-top: -6px;
+        }
+        100% {
+          width: 140px;
+          height: 140px;
+          opacity: 0;
+          margin-left: -70px;
+          margin-top: -70px;
+        }
+      }
+      .label {
+        position: fixed;
+        font-family: -apple-system, sans-serif;
+        font-size: 11px;
+        font-weight: 600;
+        color: white;
+        background: rgba(0, 0, 0, 0.6);
+        padding: 2px 6px;
+        border-radius: 4px;
+        white-space: nowrap;
+        animation: fade-out 800ms ease-out forwards;
+        pointer-events: none;
+      }
+      @keyframes fade-out {
+        0% {
+          opacity: 1;
+          transform: translateY(0);
+        }
+        100% {
+          opacity: 0;
+          transform: translateY(-18px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="ring"></div>
+    <script>
+      // Everything in this overlay uses plain HTTP. We do NOT depend on the
+      // Tauri JS bridge (which has been flaky with transparent webviews on
+      // macOS). That keeps the visual feedback layer fully independent.
+      const API = "http://127.0.0.1:39213";
+      const ring = document.getElementById("ring");
+      let lastX = -1;
+      let lastY = -1;
+      let lastFxId = 0;
+
+      async function pollCursor() {
+        try {
+          const r = await fetch(API + "/mouse/position");
+          const j = await r.json();
+          if (j.x !== lastX || j.y !== lastY) {
+            lastX = j.x;
+            lastY = j.y;
+            ring.style.transform = `translate3d(${j.x}px, ${j.y}px, 0)`;
+          }
+        } catch {}
+      }
+      setInterval(pollCursor, 50);
+
+      function ripple(x, y, button) {
+        const d = document.createElement("div");
+        d.className = `ripple ${button || "left"}`;
+        d.style.left = x + "px";
+        d.style.top = y + "px";
+        document.body.appendChild(d);
+        setTimeout(() => d.remove(), 700);
+
+        const lbl = document.createElement("div");
+        lbl.className = "label";
+        lbl.textContent = `${button || "left"}  (${x}, ${y})`;
+        lbl.style.left = x + 14 + "px";
+        lbl.style.top = y - 18 + "px";
+        document.body.appendChild(lbl);
+        setTimeout(() => lbl.remove(), 850);
+      }
+
+      // ---- OCR box overlay ----
+      let lastBoxIds = "";
+      async function pollOcr() {
+        try {
+          const r = await fetch(API + "/ocr/boxes", { cache: "no-store" });
+          if (!r.ok) return;
+          const j = await r.json();
+          if (!j.enabled) {
+            // wipe if disabled
+            if (lastBoxIds !== "") {
+              document.querySelectorAll(".ocrbox").forEach((e) => e.remove());
+              lastBoxIds = "";
+            }
+            return;
+          }
+          const sig = (j.boxes || []).map((b) => `${b.id}:${b.x},${b.y},${b.w},${b.h}:${b.tier || 3}`).join("|");
+          if (sig === lastBoxIds) return;
+          lastBoxIds = sig;
+
+          // re-render with tiered styling
+          document.querySelectorAll(".ocrbox").forEach((e) => e.remove());
+          for (const b of j.boxes || []) {
+            const tier = b.tier || 3;
+            const div = document.createElement("div");
+            div.className = "ocrbox tier" + tier;
+            div.style.left = b.x + "px";
+            div.style.top = b.y + "px";
+            div.style.width = b.w + "px";
+            div.style.height = b.h + "px";
+            const tag = document.createElement("div");
+            tag.className = "ocrtag";
+            tag.textContent = b.id;
+            div.appendChild(tag);
+            document.body.appendChild(div);
+          }
+        } catch {}
+      }
+      setInterval(pollOcr, 400);
+
+      // Long-poll the FX queue endpoint.
+      async function pollFx() {
+        while (true) {
+          try {
+            const r = await fetch(API + "/_fx/next?since=" + lastFxId, {
+              cache: "no-store",
+            });
+            if (r.ok) {
+              const j = await r.json();
+              if (j.events && j.events.length) {
+                for (const ev of j.events) {
+                  lastFxId = ev.id;
+                  if (ev.kind === "click")
+                    ripple(ev.x, ev.y, ev.button || "left");
+                  else if (ev.kind === "move") {
+                    const d = document.createElement("div");
+                    d.className = "ripple left";
+                    d.style.left = ev.x + "px";
+                    d.style.top = ev.y + "px";
+                    d.style.opacity = "0.4";
+                    document.body.appendChild(d);
+                    setTimeout(() => d.remove(), 700);
+                  } else if (ev.kind === "key") {
+                    const lbl = document.createElement("div");
+                    lbl.className = "label";
+                    const mods = (ev.modifiers || []).join("+");
+                    lbl.textContent = mods ? `${mods}+${ev.key}` : ev.key;
+                    lbl.style.left = lastX + 18 + "px";
+                    lbl.style.top = lastY - 6 + "px";
+                    document.body.appendChild(lbl);
+                    setTimeout(() => lbl.remove(), 850);
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            // network blip — back off briefly
+            await new Promise((r) => setTimeout(r, 250));
+          }
+        }
+      }
+      pollFx();
+    </script>
+  </body>
+</html>
