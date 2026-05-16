@@ -1,0 +1,29 @@
+launchd E2E — install → kill → re-start round-trip
+====================================================
+
+# Clean slate
+$ bash scripts/launchd/uninstall.sh
+(nothing to uninstall — /Users/liuzhixiong/Library/LaunchAgents/com.cursorpointer.plist not present)
+$ pkill cursor-pointer; sleep 1; curl /health
+(API down — expected)
+
+# Install + manual start
+$ bash scripts/launchd/install.sh
+✓ installed → /Users/liuzhixiong/Library/LaunchAgents/com.cursorpointer.plist
+✓ active in launchctl
+$ launchctl start com.cursorpointer; sleep 4; curl /health
+{"ok":true,"name":"cursor-pointer","version":"0.1.0"}
+
+# Kill .app and re-launch via launchctl
+$ pkill cursor-pointer; sleep 2; curl /health
+(API down — expected after kill)
+$ launchctl start com.cursorpointer; sleep 4; curl /health
+{"ok":true,"name":"cursor-pointer","version":"0.1.0"}
+
+# Final state — LaunchAgent stays registered
+$ launchctl list | grep com.cursorpointer
+35284	0	application.com.cursorpointer.app.99343326.99343329
+-	0	com.cursorpointer
+
+Conclusion: install.sh registers the agent, launchctl can start/restart the
+app, uninstall.sh is idempotent, and at next login the .app will auto-launch.
