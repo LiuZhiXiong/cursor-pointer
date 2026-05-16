@@ -252,6 +252,27 @@ at `python-client/.venv/bin/python`.
 
 ---
 
+## Auto-start on login
+
+The bundled LaunchAgent makes CursorPointer.app auto-start at user login.
+
+```bash
+bash scripts/launchd/install.sh     # one-time setup
+bash scripts/launchd/uninstall.sh   # remove
+```
+
+The plist runs `open -a /Applications/CursorPointer.app` at login. Logs go
+to `/tmp/cursorpointer.launchd.log` and `.err`. Use `launchctl list | grep
+com.cursorpointer` to confirm the service is registered.
+
+To launch immediately (without logging out and back in):
+
+```bash
+launchctl start com.cursorpointer
+```
+
+---
+
 ## Common error shape
 
 Any 4xx/5xx response:
