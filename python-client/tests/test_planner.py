@@ -88,3 +88,27 @@ def test_failure_counter_initial_state():
     assert update_subgoal_failure_counter(
         prev_count=0, prev_subgoal="", new_subgoal="X", step_failed=True,
     ) == 1
+
+
+# ---------------------------------------------------------------------------
+# stuck-warning prompt augmentation
+# ---------------------------------------------------------------------------
+
+from run_agent import build_stuck_warning
+
+
+def test_stuck_warning_empty_under_threshold():
+    assert build_stuck_warning(subgoal="X", consec_fails=0) == ""
+    assert build_stuck_warning(subgoal="X", consec_fails=2) == ""
+
+
+def test_stuck_warning_at_threshold():
+    out = build_stuck_warning(subgoal="切换 tab", consec_fails=3)
+    assert "切换 tab" in out
+    assert "3" in out
+    assert "sub-goal" in out.lower() or "subgoal" in out.lower()
+
+
+def test_stuck_warning_above_threshold():
+    out = build_stuck_warning(subgoal="X", consec_fails=5)
+    assert "5" in out

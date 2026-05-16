@@ -716,6 +716,17 @@ def update_subgoal_failure_counter(
     return 0
 
 
+def build_stuck_warning(subgoal: str, consec_fails: int) -> str:
+    """Return a non-empty warning to splice into the next-step prompt
+    when the VLM is grinding on the same sub-goal."""
+    if consec_fails < 3:
+        return ""
+    return (
+        f"\n⚠ sub-goal {subgoal!r} 已连续 {consec_fails} 步失败。\n"
+        f"必须换一个 sub-goal 描述，或考虑 done（如目标已完成或无法达成）。\n"
+    )
+
+
 def parse_action_with_subgoal(raw: str) -> tuple[str, str]:
     """Parse the VLM's two-line output.
 
