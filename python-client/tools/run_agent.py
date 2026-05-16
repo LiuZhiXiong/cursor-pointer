@@ -108,6 +108,34 @@ def preflight() -> Optional[str]:
 # Stability + click-quality helpers (algorithms for robust grounding)
 # ---------------------------------------------------------------------------
 
+def _ax_view_signature(target_pid: int) -> str:
+    """Semantic fingerprint of the current application state — md5 of
+    every actionable element's (role, label, bbox). Invariant to screenshot
+    preview thumbnails, cursor halo, vinyl record animations, etc.
+
+    If two signatures differ, the application's logical state changed.
+    Pure AX read, ~150ms.
+    """
+    import hashlib
+    sys.path.insert(0, str(Path(__file__).parent))
+    from run_ax import walk
+    from ApplicationServices import AXUIElementCreateApplication  # type: ignore
+    items: list = []
+    try:
+        walk(AXUIElementCreateApplication(target_pid), items,
+             include_text=True, include_containers=True)
+    except Exception:
+        pass
+    # Hash every element so a sidebar-tab switch (which changes CONTENT area
+    # cards) is reflected. Include bbox so even same-label elements at
+    # different positions register as state change.
+    parts = [
+        f"{it['role']}/{it['label'][:30]}/{it['x']},{it['y']}"
+        for it in items
+    ]
+    return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+
 def _xcap_screen_bytes(size: tuple = (48, 27)) -> Optional[bytes]:
     """Cheap grayscale bytes of current screen via xcap (~80ms).
 
@@ -176,6 +204,54 @@ def hover_then_click(cp, x: int, y: int, *, count: int = 1,
     cp.move(x, y)
     time.sleep(dwell)
     cp.click(x, y, count=count, button=button)
+
+
+def click_escalation_ax(cp, el: dict, target_pid: int,
+                        before_ax_sig: str) -> tuple[bool, str]:
+    """AX-semantic escalation: verify via AX state hash, not pixels.
+
+    Bullet-proof against animations/halos/preview thumbnails — only triggers
+    "success" when the application's logical state actually changed.
+    """
+    cx, cy = el["x"] + el["w"] // 2, el["y"] + el["h"] // 2
+
+    def _check_changed() -> bool:
+        return _ax_view_signature(target_pid) != before_ax_sig
+
+    # 1) hover longer + reclick
+    cp.move(cx, cy)
+    time.sleep(0.45)
+    cp.click(cx, cy)
+    time.sleep(0.8)
+    if _check_changed():
+        return True, "hover_reclick"
+
+    # 2) parent container center (often the real click target on Electron)
+    parent_bbox = el.get("parent_bbox")
+    if parent_bbox:
+        px = parent_bbox[0] + parent_bbox[2] // 2
+        py = parent_bbox[1] + parent_bbox[3] // 2
+        cp.move(px, py)
+        time.sleep(0.3)
+        cp.click(px, py)
+        time.sleep(0.8)
+        if _check_changed():
+            return True, f"parent_click({parent_bbox})"
+
+    # 3) keyboard space after focus
+    cp.move(cx, cy)
+    time.sleep(0.2)
+    cp.click(cx, cy)
+    time.sleep(0.3)
+    try:
+        cp.key("space")
+    except Exception:
+        pass
+    time.sleep(0.8)
+    if _check_changed():
+        return True, "kbd_space"
+
+    return False, "all_strategies_exhausted"
 
 
 def click_escalation_fuzzy(cp, el: dict, all_boxes: list[dict],
@@ -809,13 +885,12 @@ def main() -> int:
         action = action.strip("`*\" ").lstrip("➜→- ")
         _log(f"  MiniMax ({time.time()-t0:.1f}s): {action!r}")
 
-        # Reuse the annotation screenshot as the pre-click baseline. No
-        # extra ⌘⇧3 flashes per step.
+        # AX semantic signature is rock-solid — invariant to all UI
+        # animations / screenshot preview thumbnails / cursor halo.
+        before_ax_sig = _ax_view_signature(initial_pid)
         try:
-            before_bytes = _screen_bytes_from_png(png)
-            before_sig = _screen_signature(png)  # for legacy ban map
+            before_sig = _screen_signature(png)  # legacy ban map
         except Exception:
-            before_bytes = b""
             before_sig = ""
 
         # 4. execute — never let an exception kill the whole loop
@@ -840,8 +915,7 @@ def main() -> int:
         else:
             history.append(f"step {step}: {action}")
 
-        # Post-click verification: 1 extra ⌘⇧3, fuzzy compare so the cursor
-        # halo / vinyl record / clock tick don't count as a real UI change.
+        # Post-click verification — AX-only, no screenshot needed.
         if action.startswith(("click", "dclick", "rclick")) and result is None:
             time.sleep(1.0)
             m = ACTION_RE.search(action)
@@ -851,17 +925,13 @@ def main() -> int:
                 cx = el["x"] + el["w"] // 2
                 cy = el["y"] + el["h"] // 2
                 last_click_xy = (cx, cy)
-                try:
-                    png_after = trigger_system_screenshot()
-                    after_bytes = _screen_bytes_from_png(png_after)
-                except Exception:
-                    after_bytes = before_bytes
-                if _frames_similar(before_bytes, after_bytes):
-                    _log(f"  ⚠ no real change after click → escalating…")
+                after_ax_sig = _ax_view_signature(initial_pid)
+                if after_ax_sig == before_ax_sig:
+                    _log(f"  ⚠ AX state unchanged → escalating…")
                     from cursor_pointer import CursorPointer
                     cp_esc = CursorPointer()
-                    success, strat = click_escalation_fuzzy(
-                        cp_esc, el, boxes, before_bytes=before_bytes,
+                    success, strat = click_escalation_ax(
+                        cp_esc, el, initial_pid, before_ax_sig=before_ax_sig,
                     )
                     if success:
                         _log(f"  ✓ escalation succeeded via {strat}")
@@ -869,7 +939,7 @@ def main() -> int:
                         banned_xy.append((cx, cy))
                         _log(f"  ✗ escalation exhausted → banning ({cx},{cy})")
                 else:
-                    _log(f"  ✓ screen changed after click")
+                    _log(f"  ✓ AX state changed after click (real action)")
         else:
             time.sleep(1.4)
 
