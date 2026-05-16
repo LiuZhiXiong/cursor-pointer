@@ -262,3 +262,45 @@ def test_shell_timeout_returns_error():
         result = execute("shell cat /dev/zero", boxes=[])
     assert result is not None
     assert "timed out" in result.lower() or "timeout" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# app verb — bundle-id + fallback
+# ---------------------------------------------------------------------------
+
+
+def test_app_bundle_id_uses_application_id_syntax():
+    """Names containing a dot are treated as bundle IDs."""
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stderr=b"")
+        result = execute("app com.netease.163music", boxes=[])
+    assert result is None
+    # The osascript command should use `tell application id "..."` (bundle form)
+    cmd = mock_run.call_args.args[0]
+    assert cmd[0] == "osascript"
+    full_script = " ".join(cmd)
+    assert 'application id "com.netease.163music"' in full_script
+
+
+def test_app_osascript_failure_falls_back_to_open_a():
+    """If osascript fails, retry via `open -a`."""
+    mock_cp = MagicMock()
+    call_count = {"n": 0}
+
+    def fake_run(cmd, **kw):
+        call_count["n"] += 1
+        if cmd[0] == "osascript":
+            raise _subprocess.CalledProcessError(
+                1, "osascript", stderr=b"app not found"
+            )
+        if cmd[0] == "open":
+            return MagicMock(returncode=0, stderr=b"")
+        raise AssertionError(f"unexpected cmd: {cmd}")
+
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.subprocess.run", side_effect=fake_run):
+        result = execute("app SomeWeirdApp", boxes=[])
+    assert result is None
+    assert call_count["n"] == 2  # osascript then open
