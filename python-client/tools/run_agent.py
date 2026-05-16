@@ -703,6 +703,18 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
             dy = -int(arg)  # numeric arg = down-by-N
         else:
             return f"scroll arg must be up/down/N, got {arg!r}"
+        # Anchor cursor over the target app's content area before scrolling —
+        # wheel events go to whatever window is under the cursor. Without this,
+        # scrolls land on iTerm / the overlay and silently do nothing.
+        # Use the median center of detected boxes — that's the bulk of the
+        # target app's content.
+        if boxes:
+            xs = sorted(b["x"] + b["w"] // 2 for b in boxes)
+            ys = sorted(b["y"] + b["h"] // 2 for b in boxes)
+            ax, ay = xs[len(xs) // 2], ys[len(ys) // 2]
+            cp.move(ax, ay)
+            time.sleep(0.15)
+            _log(f"  → scroll anchor ({ax},{ay}) dy={dy}")
         cp.scroll(dy=dy)
         return None
     if verb == "scroll_to":
