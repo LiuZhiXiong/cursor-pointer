@@ -1150,6 +1150,10 @@ def main() -> int:
             time.sleep(1.0)
             continue
         if result == "DONE":
+            if os.environ.get("CURSOR_POINTER_VERIFY", "1") == "0":
+                _log(f"\n✓ done: {action}  (verifier disabled)  "
+                     f"(total {time.time()-total_t0:.1f}s)")
+                return 0
             done_reason = action[len("done"):].strip().lstrip(":：") if action.lower().startswith("done") else ""
             _log(f"  → reviewing done claim: '{done_reason}'")
             try:
