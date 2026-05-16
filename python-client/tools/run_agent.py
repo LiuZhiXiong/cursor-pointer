@@ -207,18 +207,35 @@ def hover_then_click(cp, x: int, y: int, *, count: int = 1,
 
 
 def click_escalation_ax(cp, el: dict, target_pid: int,
-                        before_ax_sig: str) -> tuple[bool, str]:
+                        before_ax_sig: str,
+                        reactivate_bundle: Optional[str] = None) -> tuple[bool, str]:
     """AX-semantic escalation: verify via AX state hash, not pixels.
 
-    Bullet-proof against animations/halos/preview thumbnails — only triggers
-    "success" when the application's logical state actually changed.
+    Strategies (safe — no keyboard shortcuts that could yank focus to
+    Spotlight / OS shortcuts):
+      1) hover longer + reclick
+      2) parent container center
+      3) horizontally-expanded sidebar-row click (widens StaticText bbox)
+
+    `reactivate_bundle` is called between strategies so focus stays on the
+    target app even if a side-effect popped a different window forward.
     """
     cx, cy = el["x"] + el["w"] // 2, el["y"] + el["h"] // 2
+
+    def _reactivate():
+        if reactivate_bundle:
+            subprocess.run(
+                ["osascript", "-e",
+                 f'tell application id "{reactivate_bundle}" to activate'],
+                capture_output=True,
+            )
+            time.sleep(0.2)
 
     def _check_changed() -> bool:
         return _ax_view_signature(target_pid) != before_ax_sig
 
     # 1) hover longer + reclick
+    _reactivate()
     cp.move(cx, cy)
     time.sleep(0.45)
     cp.click(cx, cy)
@@ -226,9 +243,10 @@ def click_escalation_ax(cp, el: dict, target_pid: int,
     if _check_changed():
         return True, "hover_reclick"
 
-    # 2) parent container center (often the real click target on Electron)
+    # 2) parent container center
     parent_bbox = el.get("parent_bbox")
     if parent_bbox:
+        _reactivate()
         px = parent_bbox[0] + parent_bbox[2] // 2
         py = parent_bbox[1] + parent_bbox[3] // 2
         cp.move(px, py)
@@ -238,18 +256,20 @@ def click_escalation_ax(cp, el: dict, target_pid: int,
         if _check_changed():
             return True, f"parent_click({parent_bbox})"
 
-    # 3) keyboard space after focus
-    cp.move(cx, cy)
-    time.sleep(0.2)
-    cp.click(cx, cy)
-    time.sleep(0.3)
-    try:
-        cp.key("space")
-    except Exception:
-        pass
-    time.sleep(0.8)
-    if _check_changed():
-        return True, "kbd_space"
+    # 3) horizontally-expanded click — for sidebar StaticText items where
+    # the real clickable region is the full ROW (icon + text). Sweep slightly
+    # to the LEFT (where the icon usually sits) since the text is on the right.
+    if el.get("role") in ("StaticText", "Image") and el["w"] < 80:
+        _reactivate()
+        # Click 30px left of the text center → typically lands on the icon-row
+        ex = max(el["x"] - 30, cx - 40)
+        ey = cy
+        cp.move(ex, ey)
+        time.sleep(0.3)
+        cp.click(ex, ey)
+        time.sleep(0.8)
+        if _check_changed():
+            return True, f"row_left_expand({ex},{ey})"
 
     return False, "all_strategies_exhausted"
 
@@ -931,7 +951,9 @@ def main() -> int:
                     from cursor_pointer import CursorPointer
                     cp_esc = CursorPointer()
                     success, strat = click_escalation_ax(
-                        cp_esc, el, initial_pid, before_ax_sig=before_ax_sig,
+                        cp_esc, el, initial_pid,
+                        before_ax_sig=before_ax_sig,
+                        reactivate_bundle=bundle_id,
                     )
                     if success:
                         _log(f"  ✓ escalation succeeded via {strat}")
