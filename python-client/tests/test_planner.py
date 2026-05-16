@@ -44,3 +44,47 @@ def test_parse_action_with_subgoal_extra_lines_tolerated():
     sg, act = parse_action_with_subgoal(raw)
     assert sg == "switch tab"
     assert act == "click 3"
+
+
+# ---------------------------------------------------------------------------
+# subgoal failure-counter accounting
+# ---------------------------------------------------------------------------
+
+from run_agent import update_subgoal_failure_counter
+
+
+def test_failure_counter_increments_on_fail():
+    new_count = update_subgoal_failure_counter(
+        prev_count=2,
+        prev_subgoal="X",
+        new_subgoal="X",
+        step_failed=True,
+    )
+    assert new_count == 3
+
+
+def test_failure_counter_resets_on_success():
+    new_count = update_subgoal_failure_counter(
+        prev_count=2,
+        prev_subgoal="X",
+        new_subgoal="X",
+        step_failed=False,
+    )
+    assert new_count == 0
+
+
+def test_failure_counter_resets_when_subgoal_changes():
+    """Switching sub-goals wipes the counter, whether or not the step failed."""
+    assert update_subgoal_failure_counter(
+        prev_count=2, prev_subgoal="X", new_subgoal="Y", step_failed=True,
+    ) == 0
+    assert update_subgoal_failure_counter(
+        prev_count=2, prev_subgoal="X", new_subgoal="Y", step_failed=False,
+    ) == 0
+
+
+def test_failure_counter_initial_state():
+    """Empty prev_subgoal (first step) behaves like a sub-goal change."""
+    assert update_subgoal_failure_counter(
+        prev_count=0, prev_subgoal="", new_subgoal="X", step_failed=True,
+    ) == 1

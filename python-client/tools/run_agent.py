@@ -45,6 +45,11 @@ LOG_FILE: Optional[Path] = None
 # that main() reads. main() must call history.clear() at the top of each run.
 history: list[str] = []
 
+# Multi-step planner state — module-level so the main loop can update and
+# helper functions can read. main() resets both at the top of each run.
+current_subgoal: str = ""
+consec_subgoal_fails: int = 0
+
 
 def _trace_req(method: str, url: str, note: str = "") -> None:
     if TRACE:
@@ -687,6 +692,28 @@ SHELL_WHITELIST = frozenset({
 # ---------------------------------------------------------------------------
 # Multi-step planner — sub-goal parsing (worker VLM emits two lines per step)
 # ---------------------------------------------------------------------------
+
+
+def update_subgoal_failure_counter(
+    prev_count: int,
+    prev_subgoal: str,
+    new_subgoal: str,
+    step_failed: bool,
+) -> int:
+    """Return the new consecutive-failure count given last/this sub-goal.
+
+    Rules:
+      • Empty prev_subgoal (first step) treats new_subgoal as continuation —
+        a failure starts the count at 1.
+      • Real sub-goal change (non-empty prev_subgoal differs from new_subgoal)
+        always resets to 0, regardless of step_failed.
+      • Same sub-goal: increment on fail, reset on success.
+    """
+    if prev_subgoal and prev_subgoal != new_subgoal:
+        return 0
+    if step_failed:
+        return prev_count + 1
+    return 0
 
 
 def parse_action_with_subgoal(raw: str) -> tuple[str, str]:
