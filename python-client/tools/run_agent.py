@@ -515,23 +515,6 @@ def detect_elements(target_pid: int) -> list[dict]:
     # 3 passes over ~500ms = phantom/animation filter
     elements = collect(target_pid, clip_to_window=True, n_passes=3)
 
-    # OmniParser enrichment — OFF by default because Florence-2 captioning on
-    # Apple Silicon CPU is brutally slow (10-60s per step). Opt in with
-    # AGENT_OMNI=1 if you want richer icon labels at the cost of latency.
-    if os.environ.get("AGENT_OMNI") == "1":
-        try:
-            from run_som import enrich_with_omniparser
-            from run_omniparser import have_models  # type: ignore
-            if have_models():
-                sys.path.insert(0, str(Path(__file__).parent))
-                from run_ocr import trigger_system_screenshot
-                try:
-                    png = trigger_system_screenshot()
-                    elements = enrich_with_omniparser(elements, png)
-                except Exception as e:
-                    _log(f"  ⚠ OmniParser enrichment skipped: {e}")
-        except Exception:
-            pass
     by_id = {e["id"]: e for e in elements}
     boxes: list[dict] = []
     for e in elements:
