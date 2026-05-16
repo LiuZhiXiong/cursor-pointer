@@ -1,0 +1,887 @@
+"""Full autonomous agent — MiniMax VLM as the brain, cursor-pointer as hands.
+
+Loop:
+  1. Detect interactive elements (consensus or single AX pass).
+  2. Annotate the screenshot with numbered boxes.
+  3. Ask MiniMax: "Given the goal, which numbered element do you click next?
+     Or are we done?"
+  4. Parse the answer → execute (click / type / wait / done).
+  5. Repeat.
+
+Run with a goal:
+
+    python tools/run_agent.py "在网易云音乐里换一首歌"
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import textwrap
+import time
+from pathlib import Path
+from typing import Optional
+
+import requests
+
+API = "http://127.0.0.1:39213"
+TRACE = os.environ.get("CURSOR_POINTER_TRACE") == "1"
+LOG_FILE: Optional[Path] = None
+
+
+def _trace_req(method: str, url: str, note: str = "") -> None:
+    if TRACE:
+        path = url.replace(API, "")
+        print(f"  [cp] {method:4} {path}  {note}")
+
+
+def _log(msg: str) -> None:
+    """Print + persist to LOG_FILE."""
+    print(msg, flush=True)
+    if LOG_FILE:
+        try:
+            with open(LOG_FILE, "a") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
+
+
+def _retry(fn, *, tries: int = 3, delay: float = 0.6, label: str = "op"):
+    """Call fn() up to `tries` times, sleeping `delay` between attempts.
+
+    Logs each failure with the exception message but doesn't crash until the
+    last attempt fails — at which point the original exception bubbles up.
+    """
+    last_exc = None
+    for attempt in range(1, tries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_exc = e
+            _log(f"  ⚠ {label} attempt {attempt}/{tries} failed: {e}")
+            if attempt < tries:
+                time.sleep(delay)
+    raise last_exc  # type: ignore[misc]
+
+
+def preflight() -> Optional[str]:
+    """Verify everything we need before the loop starts. Returns None on
+    success, or a human-readable error string."""
+    # 1) cursor-pointer API
+    try:
+        r = requests.get(f"{API}/screen/monitors", timeout=3)
+        if r.status_code != 200:
+            return f"cursor-pointer API returned {r.status_code}"
+    except Exception as e:
+        return f"cursor-pointer not reachable at {API}: {e} — is the app running?"
+
+    # 2) MiniMax mmx CLI on PATH
+    mmx_check = subprocess.run(
+        ["which", "mmx"], capture_output=True, text=True, timeout=5,
+    )
+    if mmx_check.returncode != 0:
+        return "`mmx` CLI not found on PATH — install minimax-mmx or set up VLM provider"
+
+    # 3) AX trust
+    try:
+        from ApplicationServices import AXIsProcessTrusted  # type: ignore
+        if not AXIsProcessTrusted():
+            return ("Accessibility permission missing for this Python interpreter — "
+                    "System Settings → Privacy → Accessibility → add "
+                    + sys.executable)
+    except Exception as e:
+        return f"could not check AX trust: {e}"
+
+    # 4) PyObjC NSWorkspace
+    try:
+        from Cocoa import NSWorkspace  # type: ignore  # noqa
+    except Exception as e:
+        return f"NSWorkspace import failed: {e}"
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Stability + click-quality helpers (algorithms for robust grounding)
+# ---------------------------------------------------------------------------
+
+def _xcap_screen_bytes(size: tuple = (48, 27)) -> Optional[bytes]:
+    """Cheap grayscale bytes of current screen via xcap (~80ms).
+
+    Returns raw 8-bit grayscale bytes at the given size, or None on failure.
+    """
+    import base64, io
+    try:
+        from PIL import Image
+        r = requests.get(f"{API}/screen/screenshot?monitor=0", timeout=4).json()
+        data = r["image"].split(",")[1]
+        img = Image.open(io.BytesIO(base64.b64decode(data))).convert("L").resize(size)
+        return img.tobytes()
+    except Exception:
+        return None
+
+
+def _xcap_screen_signature() -> Optional[str]:
+    """Legacy hash sig used by ban-region logic — coarse but exact."""
+    import hashlib
+    raw = _xcap_screen_bytes(size=(96, 54))
+    return hashlib.md5(raw).hexdigest() if raw else None
+
+
+def _frames_similar(a: Optional[bytes], b: Optional[bytes],
+                    threshold: float = 0.985) -> bool:
+    """Two frames are 'similar' if ≥98.5% of pixels are within 8 grayscale
+    levels of each other. Tolerant to a small spinning vinyl record / clock
+    ticking / cursor halo, but catches real page changes (huge diff regions).
+    """
+    if a is None or b is None or len(a) != len(b):
+        return False
+    same = sum(1 for x, y in zip(a, b) if abs(x - y) < 8)
+    return (same / len(a)) >= threshold
+
+
+def wait_for_stable(max_wait: float = 1.5, poll: float = 0.3,
+                    needed_matches: int = 2) -> bool:
+    """Poll screen until `needed_matches` consecutive frames are similar
+    (not necessarily identical — tolerates micro-animations like a spinning
+    cursor or vinyl record).
+    """
+    deadline = time.time() + max_wait
+    last = None
+    matches = 0
+    while time.time() < deadline:
+        cur = _xcap_screen_bytes()
+        if _frames_similar(cur, last):
+            matches += 1
+            if matches >= needed_matches:
+                return True
+        else:
+            matches = 0
+        last = cur
+        time.sleep(poll)
+    return False
+
+
+def hover_then_click(cp, x: int, y: int, *, count: int = 1,
+                     button: str = "left", dwell: float = 0.25) -> None:
+    """Move cursor → dwell to trigger hover state → click.
+
+    Many Electron / web apps reveal the actual click target on hover
+    (highlight, tooltip, expanded row). Click without hover often hits a
+    transparent layer that does nothing.
+    """
+    cp.move(x, y)
+    time.sleep(dwell)
+    cp.click(x, y, count=count, button=button)
+
+
+def click_escalation_fuzzy(cp, el: dict, all_boxes: list[dict],
+                           before_bytes: bytes) -> tuple[bool, str]:
+    """Escalation chain with ⌘⇧3 verification + fuzzy compare.
+
+    Catches the real failure mode: hover halo / vinyl spin don't fool us
+    into thinking a strategy worked when only ambient pixels changed.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    from run_ocr import trigger_system_screenshot  # type: ignore
+
+    cx, cy = el["x"] + el["w"] // 2, el["y"] + el["h"] // 2
+
+    def _check_changed() -> bool:
+        try:
+            png = trigger_system_screenshot()
+            return not _frames_similar(_screen_bytes_from_png(png), before_bytes)
+        except Exception:
+            return False
+
+    # 1) hover longer + reclick
+    cp.move(cx, cy)
+    time.sleep(0.45)
+    cp.click(cx, cy)
+    time.sleep(0.9)
+    if _check_changed():
+        return True, "hover_reclick"
+
+    # 2) parent container center
+    parent_bbox = el.get("parent_bbox")
+    if parent_bbox:
+        px = parent_bbox[0] + parent_bbox[2] // 2
+        py = parent_bbox[1] + parent_bbox[3] // 2
+        cp.move(px, py)
+        time.sleep(0.3)
+        cp.click(px, py)
+        time.sleep(0.9)
+        if _check_changed():
+            return True, f"parent_click({parent_bbox})"
+
+    # 3) keyboard
+    cp.move(cx, cy)
+    time.sleep(0.2)
+    cp.click(cx, cy)
+    time.sleep(0.3)
+    try:
+        cp.key("space")
+    except Exception:
+        pass
+    time.sleep(0.9)
+    if _check_changed():
+        return True, "kbd_space"
+
+    return False, "all_strategies_exhausted"
+
+
+def click_escalation_syssh(cp, el: dict, all_boxes: list[dict],
+                           before_sig: str) -> tuple[bool, str]:
+    """Same as click_escalation but uses ⌘⇧3 system screenshot for verification.
+
+    On macOS 26 xcap can only see cursor-pointer's own overlay, so we MUST use
+    the system screenshot to know whether the underlying app actually changed.
+    Slower (~1.2s per check) but ground-truth.
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(Path(__file__).parent))
+    from run_ocr import trigger_system_screenshot  # type: ignore
+
+    cx, cy = el["x"] + el["w"] // 2, el["y"] + el["h"] // 2
+
+    def _check_changed() -> bool:
+        try:
+            png = trigger_system_screenshot()
+            return _screen_signature(png) != before_sig
+        except Exception:
+            return False
+
+    # Strategy 1: hover longer + reclick
+    cp.move(cx, cy)
+    time.sleep(0.4)
+    cp.click(cx, cy)
+    time.sleep(0.9)
+    if _check_changed():
+        return True, "hover_reclick"
+
+    # Strategy 2: parent container center
+    parent_bbox = el.get("parent_bbox")
+    if parent_bbox:
+        px = parent_bbox[0] + parent_bbox[2] // 2
+        py = parent_bbox[1] + parent_bbox[3] // 2
+        cp.move(px, py)
+        time.sleep(0.3)
+        cp.click(px, py)
+        time.sleep(0.9)
+        if _check_changed():
+            return True, f"parent_click({parent_bbox})"
+
+    # Strategy 3: keyboard — focus then activate
+    cp.move(cx, cy)
+    time.sleep(0.2)
+    cp.click(cx, cy)
+    time.sleep(0.3)
+    try:
+        cp.key("space")
+    except Exception:
+        pass
+    time.sleep(0.9)
+    if _check_changed():
+        return True, "kbd_space"
+
+    return False, "all_strategies_exhausted"
+
+
+def click_escalation(cp, el: dict, all_boxes: list[dict],
+                     before_sig: str) -> tuple[bool, str]:
+    """If a normal click didn't move the page, try harder:
+
+      1) Hover 400ms + re-click (sometimes one hover isn't enough)
+      2) Click the parent container's center (catches Electron 'click the row,
+         not the icon')
+      3) Keyboard activation: focus then space
+
+    Uses fuzzy frame comparison so a small spinning indicator doesn't fool us
+    into thinking a strategy succeeded.
+
+    Returns (success, strategy_used).
+    """
+    cx, cy = el["x"] + el["w"] // 2, el["y"] + el["h"] // 2
+    before = _xcap_screen_bytes()
+
+    def _check_changed() -> bool:
+        after = _xcap_screen_bytes()
+        return not _frames_similar(before, after)
+
+    # Strategy 1: hover longer + reclick
+    cp.move(cx, cy)
+    time.sleep(0.4)
+    cp.click(cx, cy)
+    time.sleep(0.8)
+    if _check_changed():
+        return True, "hover_reclick"
+
+    # Strategy 2: parent container center
+    parent_bbox = el.get("parent_bbox")
+    if parent_bbox:
+        px = parent_bbox[0] + parent_bbox[2] // 2
+        py = parent_bbox[1] + parent_bbox[3] // 2
+        cp.move(px, py)
+        time.sleep(0.25)
+        cp.click(px, py)
+        time.sleep(0.8)
+        if _check_changed():
+            return True, f"parent_click({parent_bbox})"
+
+    # Strategy 3: keyboard — focus then activate
+    cp.move(cx, cy)
+    time.sleep(0.2)
+    cp.click(cx, cy)
+    time.sleep(0.3)
+    try:
+        cp.key("space")
+    except Exception:
+        pass
+    time.sleep(0.7)
+    if _check_changed():
+        return True, "kbd_space"
+
+    return False, "all_strategies_exhausted"
+
+
+# ---------------------------------------------------------------------------
+# Element detection (lean — single AX pass, fast)
+# ---------------------------------------------------------------------------
+
+def _UNUSED_row_merge(items: list[dict]) -> list[dict]:
+    """Pair small icons (≤30px) with same-row text labels into wider click rows.
+
+    A small AXImage at (x=200, y=297, w=20, h=21) plus an AXStaticText at
+    (x=240, y=295, w=30, h=18) saying "精选" → one combined row element with
+    bbox spanning both. This is what makes sidebar tab-switching actually work
+    on Electron apps where the icon alone isn't the click target.
+    """
+    icons = [it for it in items if it["role"] in {"AXImage", "AXButton"}
+             and it["w"] <= 30 and it["h"] <= 30]
+    texts = [it for it in items if it["role"] == "AXStaticText"]
+    if not icons or not texts:
+        return items
+
+    merged_ids: set[int] = set()
+    used_text: set[int] = set()
+    new_rows: list[dict] = []
+    for ic_idx, ic in enumerate(icons):
+        icx_center_y = ic["y"] + ic["h"] / 2
+        # find the closest text to the right, same horizontal band
+        best = None
+        best_dx = 1e9
+        for t_idx, t in enumerate(texts):
+            if t_idx in used_text:
+                continue
+            t_center_y = t["y"] + t["h"] / 2
+            if abs(t_center_y - icx_center_y) > max(ic["h"], t["h"]) * 0.9:
+                continue
+            dx = t["x"] - (ic["x"] + ic["w"])
+            if dx < -4 or dx > 120:
+                continue
+            if dx < best_dx:
+                best_dx = dx
+                best = (t_idx, t)
+        if best is None:
+            continue
+        t_idx, t = best
+        used_text.add(t_idx)
+        merged_ids.add(id(ic))
+        merged_ids.add(id(t))
+        x0 = min(ic["x"], t["x"]) - 4
+        y0 = min(ic["y"], t["y"]) - 2
+        x1 = max(ic["x"] + ic["w"], t["x"] + t["w"]) + 4
+        y1 = max(ic["y"] + ic["h"], t["y"] + t["h"]) + 2
+        new_rows.append({
+            "role": "AXRow",
+            "label": f"{t['label'][:30]} ({ic['label'][:20]})",
+            "x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0,
+        })
+
+    # Keep originals that didn't merge + add new rows
+    kept = [it for it in items if id(it) not in merged_ids]
+    return kept + new_rows
+
+
+def detect_elements(target_pid: int) -> list[dict]:
+    """Use SoM collector — clipped to target window, dedup'd, with parent_id.
+
+    Returns clickable leaves only. Each box carries `parent_label` so the LLM
+    can disambiguate icon-only Images by their wrapping Group label.
+    """
+    sys.path.insert(0, str(Path(__file__).parent))
+    from run_som import collect
+
+    # 3 passes over ~500ms = phantom/animation filter
+    elements = collect(target_pid, clip_to_window=True, n_passes=3)
+
+    # OmniParser enrichment — OFF by default because Florence-2 captioning on
+    # Apple Silicon CPU is brutally slow (10-60s per step). Opt in with
+    # AGENT_OMNI=1 if you want richer icon labels at the cost of latency.
+    if os.environ.get("AGENT_OMNI") == "1":
+        try:
+            from run_som import enrich_with_omniparser
+            from run_omniparser import have_models  # type: ignore
+            if have_models():
+                sys.path.insert(0, str(Path(__file__).parent))
+                from run_ocr import trigger_system_screenshot
+                try:
+                    png = trigger_system_screenshot()
+                    elements = enrich_with_omniparser(elements, png)
+                except Exception as e:
+                    _log(f"  ⚠ OmniParser enrichment skipped: {e}")
+        except Exception:
+            pass
+    by_id = {e["id"]: e for e in elements}
+    boxes: list[dict] = []
+    for e in elements:
+        if not e["clickable"]:
+            continue
+        parent = by_id.get(e["parent_id"]) if e["parent_id"] else None
+        parent_label = ""
+        parent_bbox = None
+        if parent:
+            if parent["label"] and parent["label"] != "AXGroup":
+                parent_label = parent["label"][:30]
+            # Only carry parent bbox if it's bigger — for escalation strategy
+            if parent["w"] > e["w"] or parent["h"] > e["h"]:
+                parent_bbox = (parent["x"], parent["y"], parent["w"], parent["h"])
+        boxes.append({
+            "id": e["id"],
+            "x": e["x"], "y": e["y"], "w": e["w"], "h": e["h"],
+            "role": e["role"].removeprefix("AX"),
+            "label": e["label"][:40],
+            "parent_id": e.get("parent_id"),
+            "parent_label": parent_label,
+            "parent_bbox": parent_bbox,
+        })
+
+    role_priority = {"Button": 0, "Tab": 0, "Link": 1,
+                     "TextField": 2, "SearchField": 2,
+                     "RadioButton": 3, "CheckBox": 3,
+                     "MenuItem": 4, "MenuBarItem": 5,
+                     "StaticText": 6, "Image": 7}
+
+    def _rank(b):
+        return (role_priority.get(b["role"], 4), b["w"] * b["h"])
+    boxes.sort(key=_rank)
+    return boxes
+
+
+# ---------------------------------------------------------------------------
+# Annotation rendering (for the VLM prompt)
+# ---------------------------------------------------------------------------
+
+def annotate(png_path: Path, boxes: list[dict], scale: float) -> Path:
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.open(png_path).convert("RGB")
+    W0, H0 = img.size
+    target_w = 1280
+    if W0 > target_w:
+        ratio = target_w / W0
+        img = img.resize((int(W0 * ratio), int(H0 * ratio)), Image.LANCZOS)
+        scale = scale * ratio
+    draw = ImageDraw.Draw(img, "RGBA")
+    font = None
+    for cand in ("/System/Library/Fonts/SFNS.ttf", "/System/Library/Fonts/Helvetica.ttc"):
+        if os.path.exists(cand):
+            try:
+                font = ImageFont.truetype(cand, 14)
+                break
+            except Exception:
+                pass
+    if font is None:
+        font = ImageFont.load_default()
+    for b in boxes:
+        x = int(b["x"] * scale); y = int(b["y"] * scale)
+        w = int(b["w"] * scale); h = int(b["h"] * scale)
+        draw.rectangle([x, y, x + w, y + h], outline=(236, 72, 153, 255), width=2)
+        tag = str(b["id"])
+        tw = max(20, 8 * len(tag) + 6)
+        draw.rectangle([x, max(0, y - 16), x + tw, y], fill=(236, 72, 153, 235))
+        draw.text((x + 3, max(0, y - 16)), tag, fill="white", font=font)
+    out = png_path.with_suffix(".agent.png")
+    img.save(out, "PNG", optimize=True)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# MiniMax call
+# ---------------------------------------------------------------------------
+
+def _screen_signature(png_path: Path) -> str:
+    """Cheap signature of a screenshot — used to detect 'click did nothing'."""
+    import hashlib
+    from PIL import Image
+    img = Image.open(png_path).convert("L").resize((96, 54))
+    return hashlib.md5(img.tobytes()).hexdigest()
+
+
+def _screen_bytes_from_png(png_path: Path, size: tuple = (48, 27)) -> bytes:
+    """Coarse grayscale bytes from a saved PNG — for fuzzy frame compare."""
+    from PIL import Image
+    return Image.open(png_path).convert("L").resize(size).tobytes()
+
+
+def ask_minimax(image_path: Path, prompt: str) -> str:
+    cmd = [
+        "mmx", "vision", "describe",
+        "--image", str(image_path),
+        "--prompt", prompt,
+        "--output", "json", "--quiet",
+    ]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("mmx timed out after 90s")
+    if r.returncode != 0:
+        raise RuntimeError(f"mmx failed (code {r.returncode}): {r.stderr.strip()[:200]}")
+    try:
+        data = json.loads(r.stdout)
+        for k in ("reply", "text", "content", "description", "answer", "response"):
+            if isinstance(data.get(k), str):
+                return data[k]
+        if isinstance(data.get("choices"), list) and data["choices"]:
+            msg = data["choices"][0].get("message", {})
+            if isinstance(msg.get("content"), str):
+                return msg["content"]
+        return json.dumps(data)
+    except json.JSONDecodeError:
+        return r.stdout
+
+
+# ---------------------------------------------------------------------------
+# Action parsing / execution
+# ---------------------------------------------------------------------------
+
+ACTION_RE = re.compile(
+    r"(?ix)"
+    r"(?:^|\b)"
+    r"(?P<verb>click|dclick|rclick|type|key|done|wait)"
+    r"\b\s*"
+    r"(?:(?P<arg>\d+|\".+?\"))?",
+)
+
+
+def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
+    """Parse and run one action. Return None on success, error msg on failure."""
+    from cursor_pointer import CursorPointer
+    cp = CursorPointer()
+
+    m = ACTION_RE.search(action_str)
+    if not m:
+        return f"could not parse action: {action_str!r}"
+    verb = m["verb"].lower()
+    arg = m["arg"]
+
+    if verb == "done":
+        return "DONE"
+    if verb == "wait":
+        time.sleep(float(arg) if arg and arg.isdigit() else 1.5)
+        return None
+    if verb == "type":
+        # arg via regex is only set when the text was fully quoted. For
+        # missing-quote / non-ASCII / multiline content, grab everything after
+        # the literal "type" token.
+        text = arg.strip('"') if arg else ""
+        if not text:
+            lower = action_str.lower()
+            idx = lower.find("type")
+            if idx >= 0:
+                rest = action_str[idx + 4:].strip()
+                text = rest.strip('"\'').strip()
+        if not text:
+            return "type without text"
+        cp.type_text(text)
+        return None
+    if verb == "key":
+        key = arg.strip('"') if arg else "enter"
+        # support "cmd+a" style
+        if "+" in key:
+            parts = key.split("+")
+            cp.key(parts[-1], modifiers=parts[:-1])
+        else:
+            cp.key(key)
+        return None
+    if verb in ("click", "dclick", "rclick"):
+        try:
+            eid = int(arg)
+        except (TypeError, ValueError):
+            return f"click needs element id, got {arg!r}"
+        el = next((b for b in boxes if b["id"] == eid), None)
+        if not el:
+            return f"no element with id {eid}"
+        cx, cy = el["x"] + el["w"] // 2, el["y"] + el["h"] // 2
+        # Always hover-before-click — triggers hover states on Electron/web apps
+        if verb == "click":
+            hover_then_click(cp, cx, cy)
+        elif verb == "dclick":
+            hover_then_click(cp, cx, cy, count=2)
+        else:
+            hover_then_click(cp, cx, cy, button="right")
+        return None
+    return f"unknown verb {verb!r}"
+
+
+# ---------------------------------------------------------------------------
+# Goal loop
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = textwrap.dedent("""\
+    你是一个能操作 macOS 桌面的自动化 agent。你看到的图片是当前屏幕，
+    粉色编号方框是你可以交互的元素（按钮/链接/输入框等）。
+
+    给你一个目标，你每一步从下面挑一个动作输出，**只输出一行**：
+
+        click <id>          # 点击编号为 id 的元素
+        dclick <id>         # 双击
+        rclick <id>         # 右键
+        type "<text>"       # 在当前焦点处输入文字
+        key <name>          # 按一个键（如 enter / escape / space / cmd+a）
+        wait <seconds>      # 等几秒
+        done <短结论>        # 任务完成或放弃
+
+    重要规则：
+      • 只输出一行，没有 markdown、没有解释、没有多余空格。
+      • 优先 click 真·按钮（圆形 / 实心彩色 / 明显图标），少点装饰文字。
+      • 看不清楚就 wait 1。
+""")
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print('usage: run_agent.py "<目标>" [--max-steps N]')
+        return 2
+    goal = sys.argv[1]
+    max_steps = 5
+    if "--max-steps" in sys.argv:
+        max_steps = int(sys.argv[sys.argv.index("--max-steps") + 1])
+
+    # Open run log so we can inspect failures after the fact.
+    global LOG_FILE
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    LOG_FILE = Path(f"/tmp/agent_{ts}.log")
+    LOG_FILE.write_text(f"goal: {goal}\nstarted: {ts}\n\n")
+
+    # Preflight — fail fast with a clear message
+    err = preflight()
+    if err:
+        _log(f"✗ preflight failed: {err}")
+        return 3
+    _log("✓ preflight ok (cursor-pointer + mmx + AX permission)")
+
+    from Cocoa import NSWorkspace  # type: ignore
+    initial_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+    initial_pid = initial_app.processIdentifier()
+    bundle_id = initial_app.bundleIdentifier()
+    _log(f"agent target app: {initial_app.localizedName()} (pid {initial_pid}, bundle {bundle_id})")
+    _log(f"goal: {goal!r}")
+    _log(f"log file: {LOG_FILE}\n")
+
+    if not bundle_id:
+        _log("✗ target app has no bundle id (probably system process). Aborting.")
+        return 4
+
+    sys.path.insert(0, str(Path(__file__).parent))
+    from run_ocr import trigger_system_screenshot  # type: ignore
+
+    history: list[str] = []
+    last_click_xy: Optional[tuple[int, int]] = None
+    total_t0 = time.time()
+    # Banned points: list of (cx, cy) we clicked but didn't move state. ids are
+    # unstable across passes, so we ban by screen coordinate (with tolerance).
+    banned_xy: list[tuple[int, int]] = []
+    for step in range(1, max_steps + 1):
+        step_t0 = time.time()
+        _log(f"\n── step {step}/{max_steps} ──")
+
+        # bring target to front for AX + screenshot
+        subprocess.run(
+            ["osascript", "-e", f'tell application id "{bundle_id}" to activate'],
+            capture_output=True,
+        )
+        time.sleep(0.6)
+
+        # Wait until the page stops animating/loading before reading elements
+        stable = wait_for_stable(max_wait=1.5)
+        if not stable:
+            _log("  (page still animating after 1.5s — proceeding anyway)")
+
+        # 1. detect
+        try:
+            boxes = detect_elements(initial_pid)
+        except Exception as e:
+            _log(f"  ✗ detect_elements failed: {e}")
+            time.sleep(1.0)
+            continue
+        _log(f"  AX: {len(boxes)} clickable leaves")
+
+        # Push to overlay so the user sees the SAME numbered markers that
+        # MiniMax is reasoning about. Non-fatal if it fails.
+        overlay_boxes = [
+            {**b, "text": f"{b['role']}: {b['label']}", "tier": 3}
+            for b in boxes
+        ]
+        try:
+            requests.post(f"{API}/ocr/boxes",
+                          json={"boxes": overlay_boxes, "enable": True},
+                          timeout=2)
+        except Exception as e:
+            _log(f"  ⚠ overlay post failed (non-fatal): {e}")
+        if not boxes:
+            _log("  (target app not exposing UI; waiting and retrying)")
+            time.sleep(1.5)
+            continue
+
+        # 2. screenshot + annotate — both wrapped in retry
+        _trace_req("POST", f"{API}/keyboard/key", "(⌘⇧3 — system screenshot)")
+        try:
+            png = _retry(trigger_system_screenshot, tries=3, delay=0.8,
+                         label="trigger_system_screenshot")
+        except Exception as e:
+            _log(f"  ✗ screenshot failed: {e}")
+            continue
+        _trace_req("GET", f"{API}/screen/monitors")
+        try:
+            mons = _retry(
+                lambda: requests.get(f"{API}/screen/monitors", timeout=3).json(),
+                tries=2, label="get monitors",
+            )
+            scale = float(mons[0]["scale_factor"] or 2.0)
+        except Exception:
+            scale = 2.0  # safe fallback for Retina
+        try:
+            annotated = annotate(png, boxes, scale=scale)
+        except Exception as e:
+            _log(f"  ✗ annotate failed: {e}")
+            continue
+
+        # 3. ask MiniMax — include element semantics so it picks by label, not vibes.
+        # Drop boxes whose center is within 20px of a banned point.
+        def _is_banned(b):
+            cx = b["x"] + b["w"] // 2
+            cy = b["y"] + b["h"] // 2
+            for bx, by in banned_xy:
+                if abs(cx - bx) < 20 and abs(cy - by) < 20:
+                    return True
+            return False
+        visible_boxes = [b for b in boxes if not _is_banned(b)]
+
+        elem_lines = []
+        for b in visible_boxes[:80]:
+            parent_part = f"  ⊂ {b['parent_label']}" if b.get('parent_label') else ""
+            elem_lines.append(
+                f"  #{b['id']:>3}  {b['role']:14}  '{b['label']}'  ({b['w']}x{b['h']}){parent_part}"
+            )
+        elem_section = "\n".join(elem_lines)
+
+        prompt = (
+            SYSTEM_PROMPT
+            + f"\n\n目标: {goal}\n\n"
+            + "屏幕上的可交互元素清单（粉色编号在图里对应）:\n"
+            + elem_section
+            + "\n\n"
+        )
+        if history:
+            prompt += "已执行的动作:\n" + "\n".join(f"  {h}" for h in history) + "\n\n"
+        if banned_xy:
+            prompt += f"⚠ 已经点过 {len(banned_xy)} 个位置都没用，换个明显不同的位置\n"
+            prompt += "  → 改选更宽的行（role=Row）或换屏幕另一侧的元素\n\n"
+        prompt += (
+            "请优先按标签语义匹配目标（如 精选 / 推荐 / play / search 等），"
+            "再用图里的位置确认。如果目标是切换 tab，优先选宽行（w>80）"
+            "或带文字标签的 Row 元素，**不要选 icon-only 的 Image**。"
+            "只输出一行动作:"
+        )
+        t0 = time.time()
+        try:
+            raw = _retry(lambda: ask_minimax(annotated, prompt),
+                         tries=2, delay=1.5, label="ask_minimax")
+        except Exception as e:
+            _log(f"  ✗ MiniMax failed after retries: {e} — skipping step")
+            continue
+        action = raw.strip().splitlines()[0].strip() if raw.strip() else ""
+        # If MiniMax wrapped action in markdown / quotes, strip.
+        action = action.strip("`*\" ").lstrip("➜→- ")
+        _log(f"  MiniMax ({time.time()-t0:.1f}s): {action!r}")
+
+        # Reuse the annotation screenshot as the pre-click baseline. No
+        # extra ⌘⇧3 flashes per step.
+        try:
+            before_bytes = _screen_bytes_from_png(png)
+            before_sig = _screen_signature(png)  # for legacy ban map
+        except Exception:
+            before_bytes = b""
+            before_sig = ""
+
+        # 4. execute — never let an exception kill the whole loop
+        try:
+            result = execute(action, boxes)
+        except Exception as e:
+            _log(f"  ✗ execute crashed: {e}")
+            history.append(f"step {step}: CRASHED {action} ({e})")
+            time.sleep(1.0)
+            continue
+        if result == "DONE":
+            _log(f"\n✓ done: {action}  (total {time.time()-total_t0:.1f}s)")
+            return 0
+        if result is not None:
+            _log(f"  ✗ {result}")
+            history.append(f"step {step}: FAILED {action} ({result})")
+            # If MiniMax wrote unparseable garbage, treat as a "wait 1" and move on
+            # rather than burning a step indefinitely.
+            if "could not parse" in result or "unknown verb" in result:
+                _log(f"  → falling back to wait 1 to recover")
+                time.sleep(1.0)
+        else:
+            history.append(f"step {step}: {action}")
+
+        # Post-click verification: 1 extra ⌘⇧3, fuzzy compare so the cursor
+        # halo / vinyl record / clock tick don't count as a real UI change.
+        if action.startswith(("click", "dclick", "rclick")) and result is None:
+            time.sleep(1.0)
+            m = ACTION_RE.search(action)
+            eid = int(m["arg"]) if (m and m["arg"] and m["arg"].isdigit()) else None
+            el = next((b for b in boxes if b["id"] == eid), None) if eid else None
+            if el:
+                cx = el["x"] + el["w"] // 2
+                cy = el["y"] + el["h"] // 2
+                last_click_xy = (cx, cy)
+                try:
+                    png_after = trigger_system_screenshot()
+                    after_bytes = _screen_bytes_from_png(png_after)
+                except Exception:
+                    after_bytes = before_bytes
+                if _frames_similar(before_bytes, after_bytes):
+                    _log(f"  ⚠ no real change after click → escalating…")
+                    from cursor_pointer import CursorPointer
+                    cp_esc = CursorPointer()
+                    success, strat = click_escalation_fuzzy(
+                        cp_esc, el, boxes, before_bytes=before_bytes,
+                    )
+                    if success:
+                        _log(f"  ✓ escalation succeeded via {strat}")
+                    else:
+                        banned_xy.append((cx, cy))
+                        _log(f"  ✗ escalation exhausted → banning ({cx},{cy})")
+                else:
+                    _log(f"  ✓ screen changed after click")
+        else:
+            time.sleep(1.4)
+
+        _log(f"  step took {time.time()-step_t0:.1f}s")
+
+        if len(banned_xy) >= 4:
+            _log("\n⚠ too many failed click regions — giving up to avoid infinite loop")
+            return 1
+
+    _log(f"\n⚠ stopped after {max_steps} steps  (total {time.time()-total_t0:.1f}s)")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

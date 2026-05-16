@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "CursorPointer",
+  "version": "0.1.0",
+  "identifier": "com.cursorpointer.app",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "control",
+        "title": "CursorPointer",
+        "width": 320,
+        "height": 220,
+        "minWidth": 280,
+        "minHeight": 180,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "fullscreen": false,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "macOSPrivateApi": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns"
+    ],
+    "category": "Utility",
+    "shortDescription": "AI desktop control surface",
+    "longDescription": "Floating overlay + local HTTP API for AI-driven mouse/keyboard/scroll automation on macOS.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "exceptionDomain": "localhost"
+    }
+  }
+}

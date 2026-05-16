@@ -1,0 +1,37 @@
+[package]
+name = "cursor-pointer"
+version = "0.1.0"
+description = "macOS desktop control surface for AI agents"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "cursor_pointer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+enigo = "0.2"
+xcap = "0.9"
+image = "0.25"
+base64 = "0.22"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

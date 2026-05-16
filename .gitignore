@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+src-tauri/target/
+src-tauri/gen/
+node_modules/
+.DS_Store
+dist/
+.cursor-pointer/
+*.dmg
+*.app
