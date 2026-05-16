@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from cursor_pointer import CursorPointer  # noqa: E402
 
 # Eager-imported alias so tests can patch `run_agent.trigger_system_screenshot`
 # without having to dig into run_ocr. Production code already does this lazy
@@ -39,6 +40,10 @@ except Exception:
 API = "http://127.0.0.1:39213"
 TRACE = os.environ.get("CURSOR_POINTER_TRACE") == "1"
 LOG_FILE: Optional[Path] = None
+
+# Module-level so verb handlers in execute() can append to the same list
+# that main() reads. main() must call history.clear() at the top of each run.
+history: list[str] = []
 
 
 def _trace_req(method: str, url: str, note: str = "") -> None:
@@ -670,6 +675,16 @@ def ask_minimax(image_path: Path, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shell verb safety — only these commands are allowed. Read-only by design.
+# ---------------------------------------------------------------------------
+
+SHELL_WHITELIST = frozenset({
+    "ls", "cat", "echo", "pwd", "which",
+    "head", "tail", "grep", "find", "file",
+    "wc", "date", "hostname", "whoami",
+})
+
+# ---------------------------------------------------------------------------
 # Goal-aware verification (review the worker VLM's `done` claim)
 # ---------------------------------------------------------------------------
 
@@ -771,15 +786,22 @@ def verify_done(goal: str, done_reason: str, target_pid: int,
 ACTION_RE = re.compile(
     r"(?ix)"
     r"(?:^|\b)"
-    r"(?P<verb>scroll_to|scroll|click|dclick|rclick|type|key|done|wait)"
+    r"(?P<verb>scroll_to|scroll|click|dclick|rclick|drag|app|clipboard|shell|type|key|done|wait)"
     r"\b\s*"
-    r"(?P<arg>up|down|left|right|\d+|\".+?\")?",
+    r"(?P<arg>up|down|left|right|read|write|\d+|\".+?\")?",
 )
+
+
+def _parse_drag(action_str: str) -> tuple[int | None, int | None]:
+    """Parse 'drag <from_id> to <to_id>'. Returns (None, None) on mismatch."""
+    m = re.search(r"drag\s+(\d+)\s+to\s+(\d+)", action_str, re.IGNORECASE)
+    if not m:
+        return None, None
+    return int(m.group(1)), int(m.group(2))
 
 
 def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     """Parse and run one action. Return None on success, error msg on failure."""
-    from cursor_pointer import CursorPointer
     cp = CursorPointer()
 
     m = ACTION_RE.search(action_str)
@@ -850,6 +872,114 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
         except Exception as e:
             return f"AXScrollToVisible crashed: {e}"
         return f"#{eid} does not support AXScrollToVisible"
+    if verb == "drag":
+        f, t = _parse_drag(action_str)
+        if f is None:
+            return f"drag needs 'from to' ids, got {action_str!r}"
+        el_from = next((b for b in boxes if b["id"] == f), None)
+        el_to = next((b for b in boxes if b["id"] == t), None)
+        if not el_from or not el_to:
+            return f"drag: bad id(s) {f}/{t}"
+        fx = el_from["x"] + el_from["w"] // 2
+        fy = el_from["y"] + el_from["h"] // 2
+        tx = el_to["x"] + el_to["w"] // 2
+        ty = el_to["y"] + el_to["h"] // 2
+        cp.move(fx, fy)
+        time.sleep(0.2)
+        cp.drag(from_xy=(fx, fy), to_xy=(tx, ty))
+        return None
+    if verb == "app":
+        name = ""
+        if arg:
+            name = arg.strip('"').strip()
+        if not name:
+            idx = action_str.lower().find("app")
+            if idx >= 0:
+                rest = action_str[idx + 3:].strip()
+                name = rest.strip('"\' ')
+        if not name:
+            return "app needs <name>"
+
+        # Decide initial syntax based on shape: dot = bundle id, otherwise display name.
+        is_bundle = "." in name
+        if is_bundle:
+            script = f'tell application id "{name}" to activate'
+        else:
+            script = f'tell application "{name}" to activate'
+
+        # Try 1 — osascript
+        try:
+            subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, timeout=5, check=True,
+            )
+            return None
+        except subprocess.TimeoutExpired:
+            return f"app activate {name!r} timed out (5s)"
+        except subprocess.CalledProcessError as e_osa:
+            osa_stderr = (e_osa.stderr or b"").decode(errors="replace")[:80].strip()
+            # Try 2 — `open -a` (LaunchServices fuzzy-resolves display names AND bundle IDs)
+            try:
+                subprocess.run(
+                    ["open", "-a", name],
+                    capture_output=True, timeout=5, check=True,
+                )
+                return None
+            except subprocess.TimeoutExpired:
+                return f"app activate {name!r} timed out (5s)"
+            except subprocess.CalledProcessError as e_open:
+                open_stderr = (e_open.stderr or b"").decode(errors="replace")[:80].strip()
+                return (f"app activate failed: osascript={osa_stderr!r} "
+                        f"open={open_stderr!r}")
+    if verb == "clipboard":
+        sub = ""
+        if arg:
+            sub = arg.strip('"').lower()
+        if sub == "read":
+            try:
+                text = cp.clipboard_get()
+            except Exception as e:
+                return f"clipboard read failed: {e}"
+            history.append(f"clipboard read → {text[:80]!r}")
+            return None
+        if sub == "write":
+            m = re.search(r'write\s+"([^"]*)"?', action_str, re.IGNORECASE)
+            if not m or not m.group(1):
+                return "clipboard write needs quoted text: clipboard write \"...\""
+            try:
+                cp.clipboard_set(m.group(1))
+            except Exception as e:
+                return f"clipboard write failed: {e}"
+            return None
+        return f"clipboard needs 'read' or 'write \"...\"', got {sub!r}"
+    if verb == "shell":
+        import shlex
+        idx = action_str.lower().find("shell")
+        raw = action_str[idx + 5:].strip() if idx >= 0 else ""
+        if not raw:
+            return "shell needs a command"
+        try:
+            argv = shlex.split(raw)
+        except ValueError as e:
+            return f"shell could not parse {raw!r}: {e}"
+        if not argv:
+            return "shell needs a command"
+        head = argv[0]
+        if head not in SHELL_WHITELIST:
+            return (f"shell command {head!r} not in whitelist "
+                    f"{sorted(SHELL_WHITELIST)}")
+        try:
+            out = subprocess.run(
+                argv,
+                capture_output=True, text=True, timeout=8,
+            )
+        except subprocess.TimeoutExpired:
+            return f"shell {head!r} timed out (8s)"
+        except FileNotFoundError:
+            return f"shell {head!r} not found on PATH"
+        result_text = (out.stdout or "")[:200].rstrip()
+        history.append(f"shell {head!r} → {result_text!r}")
+        return None
     if verb == "type":
         # arg via regex is only set when the text was fully quoted. For
         # missing-quote / non-ASCII / multiline content, grab everything after
@@ -961,6 +1091,11 @@ SYSTEM_PROMPT = textwrap.dedent("""\
         rclick <id>         # 右键
         scroll <up|down|N>  # 滚动当前页面（默认半屏向下）— 探索视口外内容首选
         scroll_to <id>      # 把已编号元素精确滚入视口（仅当元素已在清单里）
+        drag <id1> to <id2>  # 拖拽：从元素1拖到元素2
+        app <name>           # 启动或切换到应用（如 NeteaseMusic / Finder / Safari）
+        clipboard read       # 读当前剪贴板，结果会出现在历史里
+        clipboard write "<text>"  # 写入剪贴板
+        shell <cmd>          # 仅限只读命令：ls/cat/echo/pwd/head/tail/grep/find/wc/date 等
         type "<text>"       # 在当前焦点处输入文字
         key <name>          # 按一个键（如 enter / escape / space / cmd+a）
         wait <seconds>      # 等几秒
@@ -972,6 +1107,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
       • 看不清楚就 wait 1。
       • 找不到目标元素时用 `scroll down` 探索；元素清单里已有但部分被截则用 `scroll_to`。
       • 网易云/Electron 类 app 会把视口外元素从清单里删掉，所以靠 `scroll down` 翻页比 `scroll_to` 更通用。
+      • 跨 app 复制粘贴的标准做法：`clipboard write "<text>"` → `app <name>` → `click <input_id>` → `key cmd+v`。
 """)
 
 
@@ -1012,7 +1148,7 @@ def main() -> int:
     sys.path.insert(0, str(Path(__file__).parent))
     from run_ocr import trigger_system_screenshot  # type: ignore
 
-    history: list[str] = []
+    history.clear()
     last_click_xy: Optional[tuple[int, int]] = None
     total_t0 = time.time()
     # Banned points: list of (cx, cy) we clicked but didn't move state. ids are

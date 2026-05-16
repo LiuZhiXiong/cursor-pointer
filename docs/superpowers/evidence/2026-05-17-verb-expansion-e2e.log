@@ -1,0 +1,32 @@
+✓ preflight ok (cursor-pointer + mmx + AX permission)
+agent target app: iTerm2 (pid 2631, bundle com.googlecode.iterm2)
+goal: '读取本机 hostname，然后把它写入系统剪贴板'
+log file: /tmp/agent_20260517_010945.log
+
+
+── step 1/6 ──
+  main window: (1139,164) 769x691
+  multi-pass (3): kept 28 stable, dropped 0 flickers
+  AX: 6 clickable leaves
+  MiniMax (7.3s): 'shell hostname'
+  step took 18.2s
+
+── step 2/6 ──
+  (page still animating after 1.5s — proceeding anyway)
+  main window: (1139,164) 769x691
+  multi-pass (3): kept 28 stable, dropped 0 flickers
+  AX: 6 clickable leaves
+  MiniMax (11.6s): 'clipboard write "liuzhixiongdeMac-mini.local'
+  step took 22.6s
+
+── step 3/6 ──
+  main window: (1139,164) 769x691
+  multi-pass (3): kept 28 stable, dropped 0 flickers
+  AX: 6 clickable leaves
+  MiniMax (7.6s): 'done 已将 hostname 写入剪贴板'
+  → reviewing done claim: '已将 hostname 写入剪贴板'
+  main window: (1139,164) 769x691
+  multi-pass (3): kept 28 stable, dropped 0 flickers
+  → reviewer verdict=ok why='终端日志明确显示“VT9: E2E hostname -> clipboard goal”已通过验证并有绿色对勾，且后台 API 服务已启动。'
+
+✓ done verified: done 已将 hostname 写入剪贴板  (终端日志明确显示“VT9: E2E hostname -> clipboard goal”已通过验证并有绿色对勾，且后台 API 服务已启动。)  (total 104.2s)

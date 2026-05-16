@@ -516,6 +516,24 @@ async fn list_monitors() -> ApiResult<Vec<screen::MonitorInfo>> {
     Ok(Json(mons))
 }
 
+// ----- clipboard ---------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ClipboardSetReq {
+    text: String,
+}
+
+async fn clipboard_get() -> ApiResult<serde_json::Value> {
+    let text = run_blocking_input(input::clipboard_get).await?;
+    Ok(Json(serde_json::json!({ "text": text })))
+}
+
+async fn clipboard_set(Json(b): Json<ClipboardSetReq>) -> ApiResult<serde_json::Value> {
+    let text = b.text.clone();
+    run_blocking_input(move || input::clipboard_set(&text)).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 /// Shell out to macOS native `screencapture` — diagnostic to compare with xcap.
 async fn screencapture_native() -> impl IntoResponse {
     let path = "/tmp/native_screencapture.png";
@@ -573,6 +591,8 @@ pub async fn serve(state: Arc<AppState>, port: u16) -> anyhow::Result<()> {
         .route("/ocr/boxes", get(ocr_get).post(ocr_set))
         .route("/ocr/clear", post(ocr_clear))
         .route("/ocr/toggle", post(ocr_toggle))
+        .route("/clipboard/get", get(clipboard_get))
+        .route("/clipboard/set", post(clipboard_set))
         .route("/ocr/run", post(ocr_run))
         .layer(cors)
         .with_state(state);
