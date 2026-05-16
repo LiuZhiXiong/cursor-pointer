@@ -157,7 +157,63 @@ def collect(target_pid: int, clip_to_window: bool = True,
         dropped = len(canonical) - len(raw)
         print(f"  multi-pass ({n_passes}): kept {len(raw)} stable, dropped {dropped} flickers")
 
+    # ---- Pre-filter: noise rejection (lyrics, empty decorations, nested dupes) ----
+    # Count sibling StaticTexts per parent — a parent with many StaticText
+    # children is almost certainly a lyrics block / list-of-comments / etc.
+    # None of those individual texts are click targets.
+    sibling_static_count: dict[int, int] = {}
+    for it in raw:
+        if it["role"] == "AXStaticText":
+            p = it["parent_idx"]
+            sibling_static_count[p] = sibling_static_count.get(p, 0) + 1
+
+    # ---- Column detection: a "text column" is ≥4 items at the same x±5,
+    # similar w, similar h, distributed vertically. Catches lyrics where
+    # each line is wrapped in its own AXGroup (so sibling-count fails).
+    # We drop the entire column. Indices into raw[].
+    #
+    # Exemption: if EVERY item in the column has an AXImage neighbor on the
+    # same row (within 40px to the left), it's a nav menu (icon + label)
+    # and must be preserved. Lyrics columns lack that icon companion.
+    text_like_roles = {"AXStaticText", "AXGroup"}
+    column_drop: set[int] = set()
+    # Build a quick spatial index of AXImages for the icon-neighbor check.
+    images = [it for it in raw if it["role"] == "AXImage"]
+    def _has_icon_neighbor(it: dict) -> bool:
+        cy = it["y"] + it["h"] / 2
+        for im in images:
+            im_cy = im["y"] + im["h"] / 2
+            if abs(im_cy - cy) > 8:
+                continue
+            # icon should be left of text, within 40px
+            gap = it["x"] - (im["x"] + im["w"])
+            if -4 <= gap <= 40:
+                return True
+        return False
+
+    by_col: dict[tuple[int, int, int], list[int]] = {}
+    for i, it in enumerate(raw):
+        if it["role"] not in text_like_roles:
+            continue
+        # bin by (x // 6, w // 30, h // 5) — relaxed grouping
+        key = (it["x"] // 6, it["w"] // 30, it["h"] // 5)
+        by_col.setdefault(key, []).append(i)
+    for _, idxs in by_col.items():
+        if len(idxs) < 4:
+            continue
+        ys = sorted(raw[i]["y"] for i in idxs)
+        # require true vertical distribution: y-span > 4 * row height
+        span = ys[-1] - ys[0]
+        h = max(1, raw[idxs[0]]["h"])
+        if span < 4 * h:
+            continue
+        # Exempt icon-paired columns (nav menus)
+        if all(_has_icon_neighbor(raw[i]) for i in idxs):
+            continue
+        column_drop.update(idxs)
+
     # filter: must be inside main window, not a giant container, not tiny,
+    # not noisy (empty-label decoration, lyrics-style StaticText),
     # and not duplicating an already-seen bbox.
     seen_keys: set[tuple] = set()
 
@@ -175,8 +231,29 @@ def collect(target_pid: int, clip_to_window: bool = True,
             # center must be inside the target window's bbox (+8px slack)
             if not (wx - 8 <= cx <= wx + ww + 8 and wy - 8 <= cy <= wy + wh + 8):
                 return False
+
+        role = it["role"]
+        label = (it.get("label") or "").strip()
+
+        # 1) Lyrics / long-list StaticText: parent with ≥4 StaticText siblings.
+        #    None of those individual lines are click targets — they're
+        #    rendered text inside a scroll container.
+        if role == "AXStaticText":
+            if sibling_static_count.get(it["parent_idx"], 0) >= 4:
+                return False
+            if len(label) <= 1:
+                # ":", "-", " " etc. are decorative separators
+                return False
+
+        # 2) Empty-label decorations: AXImage / AXGroup with no semantic
+        #    label AND role-name-only ("AXImage" / "AXGroup") — pure
+        #    visual fluff that pollutes the marker list.
+        if role in ("AXImage", "AXGroup"):
+            if not label or label == role:
+                return False
+
         # spatial dedup: round to 3px grid, drop if exact same role already seen
-        key = (it["role"], it["x"] // 3, it["y"] // 3, it["w"] // 3, it["h"] // 3)
+        key = (role, it["x"] // 3, it["y"] // 3, it["w"] // 3, it["h"] // 3)
         if key in seen_keys:
             return False
         seen_keys.add(key)
@@ -185,13 +262,56 @@ def collect(target_pid: int, clip_to_window: bool = True,
     keep_map: dict[int, int] = {}  # old idx → new idx
     keep: list[dict] = []
     for i, it in enumerate(raw):
+        if i in column_drop:
+            continue
         if not _kept(it):
             continue
         keep_map[i] = len(keep)
         keep.append(it)
 
+    # 3) Nested-overlap pass: if A fully contains B and they share role,
+    #    drop the larger outer A — the smaller is a more specific click
+    #    target. Operates on keep[] before parent reindex.
+    def _contains(a, b, slack=2):
+        return (a["x"] - slack <= b["x"]
+                and a["y"] - slack <= b["y"]
+                and a["x"] + a["w"] + slack >= b["x"] + b["w"]
+                and a["y"] + a["h"] + slack >= b["y"] + b["h"])
+
+    drop_idx: set[int] = set()
+    for i, a in enumerate(keep):
+        if i in drop_idx:
+            continue
+        for j, b in enumerate(keep):
+            if i == j or j in drop_idx:
+                continue
+            if a["role"] != b["role"]:
+                continue
+            if a["w"] * a["h"] > b["w"] * b["h"] * 1.05 and _contains(a, b):
+                drop_idx.add(i)
+                break
+    if drop_idx:
+        # Drop from keep AND from keep_map (raw_idx → keep_idx) so the
+        # subsequent parent-reindex (which uses keep_map) stays consistent.
+        # We need to rebuild keep_map with new positions.
+        new_keep_map: dict[int, int] = {}
+        new_keep: list[dict] = []
+        old_to_new: dict[int, int] = {}
+        for old_keep_idx, it in enumerate(keep):
+            if old_keep_idx in drop_idx:
+                continue
+            new_idx = len(new_keep)
+            new_keep.append(it)
+            old_to_new[old_keep_idx] = new_idx
+        # invert keep_map (raw → old_keep_idx) and rebuild with new indices
+        for raw_idx, old_keep_idx in keep_map.items():
+            if old_keep_idx in old_to_new:
+                new_keep_map[raw_idx] = old_to_new[old_keep_idx]
+        keep = new_keep
+        keep_map = new_keep_map
+
     # For each kept element, climb up raw[parent_idx] until we find one that
-    # also got kept (or hit the root).
+    # also got kept (or hit the root). After this `parent_idx` points into keep.
     for it in keep:
         p = it["parent_idx"]
         while p >= 0 and p not in keep_map:
