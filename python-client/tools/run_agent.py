@@ -661,6 +661,48 @@ def ask_minimax(image_path: Path, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Goal-aware verification (review the worker VLM's `done` claim)
+# ---------------------------------------------------------------------------
+
+REVIEW_PROMPT = """你是一个验收员。Agent 刚才报告任务完成，你要核实。
+
+原始目标：{goal}
+Agent 的完成理由：{done_reason}
+
+当前屏幕（图）和可交互元素清单：
+{elements}
+
+判断：当前屏幕状态是否真正达成原始目标？
+
+输出格式（严格两行）：
+verdict: ok | reject
+why: <一句话>
+"""
+
+
+def parse_verdict(raw: str) -> tuple[str, str]:
+    """Parse the reviewer VLM's two-line response.
+
+    Default-to-reject on any ambiguity — fail-safe against hallucinated
+    `verdict: ok` lines from a confused reviewer.
+    """
+    verdict = "reject"
+    why = (raw or "").strip()[:120]
+    for line in (raw or "").splitlines():
+        stripped = line.strip()
+        lower = stripped.lower()
+        if lower.startswith("verdict:"):
+            value = stripped.split(":", 1)[1].strip().lower()
+            if value.startswith("ok"):
+                verdict = "ok"
+            elif value.startswith("reject"):
+                verdict = "reject"
+        elif lower.startswith("why:"):
+            why = stripped.split(":", 1)[1].strip()[:200]
+    return verdict, why
+
+
+# ---------------------------------------------------------------------------
 # Action parsing / execution
 # ---------------------------------------------------------------------------
 
