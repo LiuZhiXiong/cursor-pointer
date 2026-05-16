@@ -855,8 +855,8 @@ SYSTEM_PROMPT = textwrap.dedent("""\
         click <id>          # 点击编号为 id 的元素
         dclick <id>         # 双击
         rclick <id>         # 右键
-        scroll <up|down|N>  # 滚动当前页面（默认半屏向下）
-        scroll_to <id>      # 把编号元素滚到可见区（精准定位视口外目标）
+        scroll <up|down|N>  # 滚动当前页面（默认半屏向下）— 探索视口外内容首选
+        scroll_to <id>      # 把已编号元素精确滚入视口（仅当元素已在清单里）
         type "<text>"       # 在当前焦点处输入文字
         key <name>          # 按一个键（如 enter / escape / space / cmd+a）
         wait <seconds>      # 等几秒
@@ -866,7 +866,8 @@ SYSTEM_PROMPT = textwrap.dedent("""\
       • 只输出一行，没有 markdown、没有解释、没有多余空格。
       • 优先 click 真·按钮（圆形 / 实心彩色 / 明显图标），少点装饰文字。
       • 看不清楚就 wait 1。
-      • 找不到目标元素时，先 scroll down 探索更多内容，再决定 click。
+      • 找不到目标元素时用 `scroll down` 探索；元素清单里已有但部分被截则用 `scroll_to`。
+      • 网易云/Electron 类 app 会把视口外元素从清单里删掉，所以靠 `scroll down` 翻页比 `scroll_to` 更通用。
 """)
 
 
