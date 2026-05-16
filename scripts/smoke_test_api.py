@@ -236,6 +236,18 @@ def t_ocr_run() -> None:
            "spawns python helper — best-effort")
 
 
+# --- clipboard ---
+def t_clipboard_set_get_roundtrip() -> None:
+    """POST /clipboard/set then GET /clipboard/get round-trips the same text."""
+    token = "cursor-pointer-smoke-test-token"
+    r1 = post("/clipboard/set", {"text": token})
+    g = get("/clipboard/get").json()
+    ok = r1.status_code == 200 and g.get("text") == token
+    record("/clipboard/set + /clipboard/get", PASS if ok else FAIL,
+           f"set={r1.status_code} get={g.get('text')!r}",
+           "round-trip via pbcopy/pbpaste")
+
+
 # --- run all ---
 def main() -> int:
     print(f"🔍 smoke-testing cursor-pointer @ {API}\n")
@@ -267,6 +279,7 @@ def main() -> int:
         t_ocr_get,
         t_ocr_set_clear_toggle,
         t_ocr_run,
+        t_clipboard_set_get_roundtrip,
     ]
 
     for t in tests:

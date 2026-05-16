@@ -1061,6 +1061,11 @@ SYSTEM_PROMPT = textwrap.dedent("""\
         rclick <id>         # 右键
         scroll <up|down|N>  # 滚动当前页面（默认半屏向下）— 探索视口外内容首选
         scroll_to <id>      # 把已编号元素精确滚入视口（仅当元素已在清单里）
+        drag <id1> to <id2>  # 拖拽：从元素1拖到元素2
+        app <name>           # 启动或切换到应用（如 NeteaseMusic / Finder / Safari）
+        clipboard read       # 读当前剪贴板，结果会出现在历史里
+        clipboard write "<text>"  # 写入剪贴板
+        shell <cmd>          # 仅限只读命令：ls/cat/echo/pwd/head/tail/grep/find/wc/date 等
         type "<text>"       # 在当前焦点处输入文字
         key <name>          # 按一个键（如 enter / escape / space / cmd+a）
         wait <seconds>      # 等几秒
@@ -1072,6 +1077,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
       • 看不清楚就 wait 1。
       • 找不到目标元素时用 `scroll down` 探索；元素清单里已有但部分被截则用 `scroll_to`。
       • 网易云/Electron 类 app 会把视口外元素从清单里删掉，所以靠 `scroll down` 翻页比 `scroll_to` 更通用。
+      • 跨 app 复制粘贴的标准做法：`clipboard write "<text>"` → `app <name>` → `click <input_id>` → `key cmd+v`。
 """)
 
 
