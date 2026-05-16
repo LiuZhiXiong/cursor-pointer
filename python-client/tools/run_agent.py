@@ -27,6 +27,15 @@ from typing import Optional
 
 import requests
 
+# Eager-imported alias so tests can patch `run_agent.trigger_system_screenshot`
+# without having to dig into run_ocr. Production code already does this lazy
+# import in several places; we just hoist a module-level reference.
+try:
+    sys.path.insert(0, str(Path(__file__).parent))
+    from run_ocr import trigger_system_screenshot  # type: ignore  # noqa: E402
+except Exception:
+    trigger_system_screenshot = None  # type: ignore
+
 API = "http://127.0.0.1:39213"
 TRACE = os.environ.get("CURSOR_POINTER_TRACE") == "1"
 LOG_FILE: Optional[Path] = None
@@ -700,6 +709,59 @@ def parse_verdict(raw: str) -> tuple[str, str]:
         elif lower.startswith("why:"):
             why = stripped.split(":", 1)[1].strip()[:200]
     return verdict, why
+
+
+def verify_done(goal: str, done_reason: str, target_pid: int,
+                ask_minimax) -> tuple[str, str]:
+    """Re-ground a `done` claim against fresh screen state.
+
+    Returns ("ok", why) only if the reviewer VLM confirms the goal is
+    truly achieved. Any failure (screenshot timeout, mmx crash, garbage
+    output) returns ("reject", why) — fail-safe.
+    """
+    try:
+        if trigger_system_screenshot is None:
+            raise RuntimeError("trigger_system_screenshot unavailable")
+        png = trigger_system_screenshot()
+    except Exception as e:
+        return "reject", f"screenshot failed: {e}"
+
+    try:
+        boxes = detect_elements(target_pid)
+    except Exception as e:
+        return "reject", f"element detection failed: {e}"
+
+    try:
+        mons = requests.get(f"{API}/screen/monitors", timeout=3).json()
+        scale = float(mons[0]["scale_factor"] or 2.0)
+    except Exception:
+        scale = 2.0
+
+    try:
+        annotated = annotate(png, boxes, scale=scale)
+    except Exception as e:
+        return "reject", f"annotation failed: {e}"
+
+    elem_lines = []
+    for b in boxes[:60]:
+        parent_part = f"  ⊂ {b['parent_label']}" if b.get("parent_label") else ""
+        elem_lines.append(
+            f"  #{b['id']:>3}  {b['role']:14}  '{b['label']}'  ({b['w']}x{b['h']}){parent_part}"
+        )
+    elements_block = "\n".join(elem_lines) if elem_lines else "(none)"
+
+    prompt = REVIEW_PROMPT.format(
+        goal=goal,
+        done_reason=done_reason or "(未提供)",
+        elements=elements_block,
+    )
+
+    try:
+        raw = ask_minimax(annotated, prompt)
+    except Exception as e:
+        return "reject", f"reviewer exception: {e}"
+
+    return parse_verdict(raw)
 
 
 # ---------------------------------------------------------------------------
