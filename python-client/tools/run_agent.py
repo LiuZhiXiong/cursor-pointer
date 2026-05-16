@@ -1407,8 +1407,17 @@ def main() -> int:
                      f"(total {time.time()-total_t0:.1f}s)")
                 return 0
             history.append(
-                f"step {step}: rejected hallucinated done ({why})"
+                f"step {step}: [{subgoal}] rejected hallucinated done ({why})"
             )
+            # Reject still counts as a same-subgoal failure so the stuck
+            # detector eventually pushes the VLM off a wrong sub-goal.
+            consec_subgoal_fails = update_subgoal_failure_counter(
+                prev_count=consec_subgoal_fails,
+                prev_subgoal=prev_subgoal_for_counter,
+                new_subgoal=subgoal,
+                step_failed=True,
+            )
+            current_subgoal = subgoal
             _log(f"  ⚠ done rejected — continuing main loop")
             continue
         if result is not None:
