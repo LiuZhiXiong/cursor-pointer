@@ -127,6 +127,12 @@ class CursorPointer:
         self.move(*to_xy)
         self.mouse_up(button)
 
+    def clipboard_get(self) -> str:
+        return self._get("/clipboard/get")["text"]
+
+    def clipboard_set(self, text: str) -> None:
+        self._post("/clipboard/set", {"text": text})
+
     def scroll(
         self,
         dy: int = 0,
