@@ -41,6 +41,10 @@ API = "http://127.0.0.1:39213"
 TRACE = os.environ.get("CURSOR_POINTER_TRACE") == "1"
 LOG_FILE: Optional[Path] = None
 
+# Module-level so verb handlers in execute() can append to the same list
+# that main() reads. main() must call history.clear() at the top of each run.
+history: list[str] = []
+
 
 def _trace_req(method: str, url: str, note: str = "") -> None:
     if TRACE:
@@ -896,6 +900,27 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
             return f"app activate failed: {stderr.strip()}"
         except subprocess.TimeoutExpired:
             return f"app activate {name!r} timed out (5s)"
+    if verb == "clipboard":
+        sub = ""
+        if arg:
+            sub = arg.strip('"').lower()
+        if sub == "read":
+            try:
+                text = cp.clipboard_get()
+            except Exception as e:
+                return f"clipboard read failed: {e}"
+            history.append(f"clipboard read → {text[:80]!r}")
+            return None
+        if sub == "write":
+            m = re.search(r'write\s+"([^"]*)"', action_str, re.IGNORECASE)
+            if not m or not m.group(1):
+                return "clipboard write needs quoted text: clipboard write \"...\""
+            try:
+                cp.clipboard_set(m.group(1))
+            except Exception as e:
+                return f"clipboard write failed: {e}"
+            return None
+        return f"clipboard needs 'read' or 'write \"...\"', got {sub!r}"
     if verb == "type":
         # arg via regex is only set when the text was fully quoted. For
         # missing-quote / non-ASCII / multiline content, grab everything after
@@ -1058,7 +1083,7 @@ def main() -> int:
     sys.path.insert(0, str(Path(__file__).parent))
     from run_ocr import trigger_system_screenshot  # type: ignore
 
-    history: list[str] = []
+    history.clear()
     last_click_xy: Optional[tuple[int, int]] = None
     total_t0 = time.time()
     # Banned points: list of (cx, cy) we clicked but didn't move state. ids are

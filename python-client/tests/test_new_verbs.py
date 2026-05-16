@@ -160,3 +160,45 @@ def test_app_osascript_failure_returns_error():
         result = execute("app NoSuchApp", boxes=[])
     assert result is not None
     assert "failed" in result.lower() or "not found" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# clipboard verb (read | write)
+# ---------------------------------------------------------------------------
+
+
+def test_clipboard_read_appends_to_history():
+    """clipboard read should call cp.clipboard_get and inject into history."""
+    mock_cp = MagicMock()
+    mock_cp.clipboard_get.return_value = "已复制的文本"
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.history", []) as fake_hist:
+        result = execute("clipboard read", boxes=[])
+    assert result is None
+    mock_cp.clipboard_get.assert_called_once()
+    assert any("clipboard read" in h for h in fake_hist)
+    assert any("已复制的文本" in h for h in fake_hist)
+
+
+def test_clipboard_write_extracts_quoted_text():
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp):
+        result = execute('clipboard write "hello world"', boxes=[])
+    assert result is None
+    mock_cp.clipboard_set.assert_called_once_with("hello world")
+
+
+def test_clipboard_write_without_quotes_returns_error():
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp):
+        result = execute("clipboard write hello", boxes=[])
+    assert result is not None
+    assert "quoted" in result.lower() or "needs" in result.lower()
+
+
+def test_clipboard_bad_subcommand_returns_error():
+    mock_cp = MagicMock()
+    with patch("run_agent.CursorPointer", return_value=mock_cp):
+        result = execute("clipboard reverse", boxes=[])
+    assert result is not None
+    assert "read" in result.lower()  # message should list valid subs
