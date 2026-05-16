@@ -1150,8 +1150,27 @@ def main() -> int:
             time.sleep(1.0)
             continue
         if result == "DONE":
-            _log(f"\n✓ done: {action}  (total {time.time()-total_t0:.1f}s)")
-            return 0
+            done_reason = action[len("done"):].strip().lstrip(":：") if action.lower().startswith("done") else ""
+            _log(f"  → reviewing done claim: '{done_reason}'")
+            try:
+                verdict, why = verify_done(
+                    goal=goal,
+                    done_reason=done_reason,
+                    target_pid=initial_pid,
+                    ask_minimax=ask_minimax,
+                )
+            except Exception as e:
+                verdict, why = "reject", f"verifier crashed: {e}"
+            _log(f"  → reviewer verdict={verdict} why='{why}'")
+            if verdict == "ok":
+                _log(f"\n✓ done verified: {action}  ({why})  "
+                     f"(total {time.time()-total_t0:.1f}s)")
+                return 0
+            history.append(
+                f"step {step}: rejected hallucinated done ({why})"
+            )
+            _log(f"  ⚠ done rejected — continuing main loop")
+            continue
         if result is not None:
             _log(f"  ✗ {result}")
             history.append(f"step {step}: FAILED {action} ({result})")
