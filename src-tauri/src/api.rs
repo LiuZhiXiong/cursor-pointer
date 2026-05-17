@@ -116,6 +116,7 @@ pub struct BrowserResult {
 
 pub struct BrowserQueue {
     pub pending: Mutex<VecDeque<BrowserCommand>>,
+    pub in_progress: Mutex<HashMap<String, BrowserCommand>>,
     pub results: Mutex<HashMap<String, BrowserResult>>,
 }
 
@@ -123,6 +124,7 @@ impl BrowserQueue {
     pub fn new() -> Self {
         Self {
             pending: Mutex::new(VecDeque::new()),
+            in_progress: Mutex::new(HashMap::new()),
             results: Mutex::new(HashMap::new()),
         }
     }
@@ -152,10 +154,23 @@ impl BrowserQueue {
         let now = Self::now();
         let mut pending = self.pending.lock().unwrap();
         pending.retain(|c| c.expires_at > now);
-        pending.pop_front()
+        let cmd = pending.pop_front()?;
+        drop(pending);
+        // Track as in-flight so status() can distinguish "being processed"
+        // from "expired/unknown".
+        let mut in_progress = self.in_progress.lock().unwrap();
+        // Evict stale in-progress entries — TTL same as pending.
+        in_progress.retain(|_, c| c.expires_at > now);
+        in_progress.insert(cmd.id.clone(), cmd.clone());
+        Some(cmd)
     }
 
     pub fn store_result(&self, result: BrowserResult) {
+        // Remove from in-progress (if there).
+        {
+            let mut ip = self.in_progress.lock().unwrap();
+            ip.remove(&result.id);
+        }
         let mut results = self.results.lock().unwrap();
         let cutoff = Self::now().saturating_sub(60);
         results.retain(|_, r| r.posted_at >= cutoff);
@@ -163,26 +178,40 @@ impl BrowserQueue {
     }
 
     pub fn status(&self, id: &str) -> serde_json::Value {
-        let results = self.results.lock().unwrap();
-        if let Some(r) = results.get(id) {
-            return serde_json::json!({
-                "status": "done",
-                "ok": r.ok,
-                "output": r.output,
-            });
+        // 1) results — wins (terminal state)
+        {
+            let results = self.results.lock().unwrap();
+            if let Some(r) = results.get(id) {
+                return serde_json::json!({
+                    "status": "done",
+                    "ok": r.ok,
+                    "output": r.output,
+                });
+            }
         }
-        drop(results);
-        let pending = self.pending.lock().unwrap();
         let now = Self::now();
-        let in_pending = pending.iter().any(|c| c.id == id && c.expires_at > now);
-        let expired = pending.iter().any(|c| c.id == id && c.expires_at <= now);
-        if in_pending {
-            serde_json::json!({ "status": "pending" })
-        } else if expired {
-            serde_json::json!({ "status": "expired" })
-        } else {
-            serde_json::json!({ "status": "expired" })
+        // 2) pending (still waiting for a client to drain)
+        {
+            let pending = self.pending.lock().unwrap();
+            if pending.iter().any(|c| c.id == id && c.expires_at > now) {
+                return serde_json::json!({ "status": "pending" });
+            }
+            if pending.iter().any(|c| c.id == id && c.expires_at <= now) {
+                return serde_json::json!({ "status": "expired" });
+            }
         }
+        // 3) in_progress (drained by client, still executing)
+        {
+            let ip = self.in_progress.lock().unwrap();
+            if let Some(c) = ip.get(id) {
+                if c.expires_at > now {
+                    return serde_json::json!({ "status": "in_progress" });
+                }
+                return serde_json::json!({ "status": "expired" });
+            }
+        }
+        // 4) never seen / evicted
+        serde_json::json!({ "status": "expired" })
     }
 }
 
