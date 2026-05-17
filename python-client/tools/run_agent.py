@@ -898,7 +898,7 @@ def verify_done(goal: str, done_reason: str, target_pid: int,
 ACTION_RE = re.compile(
     r"(?ix)"
     r"(?:^|\b)"
-    r"(?P<verb>scroll_to|scroll|click|dclick|rclick|drag|app|clipboard|shell|type|key|done|wait)"
+    r"(?P<verb>scroll_to|scroll|click|dclick|rclick|drag|app|clipboard|shell|browser|type|key|done|wait)"
     r"\b\s*"
     r"(?P<arg>up|down|left|right|read|write|\d+|\".+?\")?",
 )
@@ -1092,6 +1092,40 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
         result_text = (out.stdout or "")[:200].rstrip()
         history.append(f"shell {head!r} → {result_text!r}")
         return None
+    if verb == "browser":
+        idx = action_str.lower().find("browser")
+        rest = action_str[idx + 7:].strip() if idx >= 0 else ""
+        m = re.search(r'"([^"]*)"?', rest)
+        cmd_text = m.group(1) if m else rest.strip()
+        if not cmd_text:
+            return 'browser needs a quoted command, e.g. browser "what is the title?"'
+
+        try:
+            enq = cp.browser_enqueue(cmd_text, timeout_seconds=30)
+        except Exception as e:
+            return f"browser enqueue failed: {e}"
+        cmd_id = enq.get("id")
+        if not cmd_id:
+            return f"browser enqueue returned no id: {enq!r}"
+
+        deadline = time.time() + 35
+        while time.time() < deadline:
+            try:
+                st = cp.browser_result_status(cmd_id)
+            except Exception as e:
+                return f"browser result poll failed: {e}"
+            status = st.get("status")
+            if status == "done":
+                output = (st.get("output") or "")[:200]
+                if not st.get("ok"):
+                    return f"browser failed: {output}"
+                history.append(f"browser {cmd_text[:40]!r} → {output!r}")
+                return None
+            if status == "expired":
+                return ("browser command expired (no WebClaw client polling? "
+                        "enable Remote Control in WebClaw sidepanel)")
+            time.sleep(0.5)
+        return "browser timed out waiting for WebClaw"
     if verb == "type":
         # arg via regex is only set when the text was fully quoted. For
         # missing-quote / non-ASCII / multiline content, grab everything after
@@ -1215,6 +1249,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
         clipboard read       # 读当前剪贴板，结果会出现在历史里
         clipboard write "<text>"  # 写入剪贴板
         shell <cmd>          # 仅限只读命令：ls/cat/echo/pwd/head/tail/grep/find/wc/date 等
+        browser "<task>"     # 委托 WebClaw 在浏览器里执行（需 WebClaw 启用 Remote Control）
         type "<text>"       # 在当前焦点处输入文字
         key <name>          # 按一个键（如 enter / escape / space / cmd+a）
         wait <seconds>      # 等几秒
