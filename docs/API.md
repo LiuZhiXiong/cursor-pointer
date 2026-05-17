@@ -221,6 +221,23 @@ Hard-coded venv path: `/Users/liuzhixiong/coding-project/cursor-pointer/python-c
 
 ---
 
+## Browser bridge (cursor-pointer ↔ WebClaw)
+
+The `/browser/*` namespace lets the cursor-pointer agent delegate
+browser-DOM tasks to WebClaw via an HTTP polling pattern.
+
+- `POST /browser/enqueue` `{"command": "...", "timeout_seconds": 30}` → `{"id": "...", "expires_at": ...}`
+- `GET /browser/next-command` → `{"id": "...", "command": "..."}` or `{}` if queue empty
+- `POST /browser/result` `{"id": "...", "ok": true, "output": "..."}` → `{"ok": true}`
+- `GET /browser/result/<id>` → `{"status": "pending" | "done" | "expired", ...}`
+
+The agent's `browser "<task>"` verb enqueues a command, polls the result
+endpoint until done or expired, and feeds the output into history.
+WebClaw must have Remote Control enabled in its sidepanel for the queue
+to drain; otherwise commands expire after `timeout_seconds`.
+
+---
+
 ## Permissions {#permissions}
 
 cursor-pointer needs **four** macOS privacy grants. All of them are bound by
