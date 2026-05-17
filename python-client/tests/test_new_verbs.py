@@ -349,3 +349,26 @@ def test_shell_uses_argv_list_not_shell_string():
     assert cmd_arg[0] == "ls"
     assert "/tmp" in cmd_arg
     assert kwargs.get("shell", False) is False
+
+
+# ---------------------------------------------------------------------------
+# CursorPointer client — browser bridge methods
+# ---------------------------------------------------------------------------
+
+
+def test_client_browser_enqueue_hits_correct_endpoint():
+    from cursor_pointer import CursorPointer
+    cp = CursorPointer()
+    with patch.object(cp, "_post", return_value={"id": "abc", "expires_at": 123}) as p:
+        result = cp.browser_enqueue("test cmd", timeout_seconds=30)
+    p.assert_called_once_with("/browser/enqueue", {"command": "test cmd", "timeout_seconds": 30})
+    assert result["id"] == "abc"
+
+
+def test_client_browser_result_status_hits_correct_endpoint():
+    from cursor_pointer import CursorPointer
+    cp = CursorPointer()
+    with patch.object(cp, "_get", return_value={"status": "done", "ok": True, "output": "x"}) as g:
+        result = cp.browser_result_status("abc")
+    g.assert_called_once_with("/browser/result/abc")
+    assert result["status"] == "done"
