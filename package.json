@@ -1,0 +1,14 @@
+{
+  "name": "cursor-pointer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "macOS desktop control surface for AI agents — floating overlay + local HTTP API for mouse/keyboard/scroll automation",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}
