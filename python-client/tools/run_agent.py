@@ -1101,7 +1101,10 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
             return 'browser needs a quoted command, e.g. browser "what is the title?"'
 
         try:
-            enq = cp.browser_enqueue(cmd_text, timeout_seconds=30)
+            # 90s queue timeout — browser tasks routinely take 30-60s
+            # (page load + LLM scrape + reasoning). Shorter values make
+            # the queue declare 'expired' while WebClaw is still working.
+            enq = cp.browser_enqueue(cmd_text, timeout_seconds=90)
         except Exception as e:
             return f"browser enqueue failed: {e}"
         cmd_id = enq.get("id")
