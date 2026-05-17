@@ -434,3 +434,23 @@ def test_browser_verb_failed_result_returns_error():
         result = execute('browser "bad selector"', boxes=[])
     assert result is not None
     assert "DOM query failed" in result
+
+
+def test_browser_verb_in_progress_continues_polling():
+    """The new in_progress queue state should NOT make the verb bail —
+    it means WebClaw is still working."""
+    mock_cp = MagicMock()
+    mock_cp.browser_enqueue.return_value = {"id": "abc", "expires_at": 999}
+    mock_cp.browser_result_status.side_effect = [
+        {"status": "pending"},
+        {"status": "in_progress"},
+        {"status": "in_progress"},
+        {"status": "done", "ok": True, "output": "finished"},
+    ]
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.time.sleep"), \
+         patch("run_agent.history", []) as fake_hist:
+        result = execute('browser "x"', boxes=[])
+    assert result is None
+    assert mock_cp.browser_result_status.call_count == 4
+    assert any("finished" in h for h in fake_hist)

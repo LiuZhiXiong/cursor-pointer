@@ -1108,7 +1108,7 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
         if not cmd_id:
             return f"browser enqueue returned no id: {enq!r}"
 
-        deadline = time.time() + 35
+        deadline = time.time() + 60   # bumped from 35 — give WebClaw time
         while time.time() < deadline:
             try:
                 st = cp.browser_result_status(cmd_id)
@@ -1124,6 +1124,7 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
             if status == "expired":
                 return ("browser command expired (no WebClaw client polling? "
                         "enable Remote Control in WebClaw sidepanel)")
+            # pending or in_progress → keep polling
             time.sleep(0.5)
         return "browser timed out waiting for WebClaw"
     if verb == "type":
@@ -1262,6 +1263,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
       • 找不到目标元素时用 `scroll down` 探索；元素清单里已有但部分被截则用 `scroll_to`。
       • 网易云/Electron 类 app 会把视口外元素从清单里删掉，所以靠 `scroll down` 翻页比 `scroll_to` 更通用。
       • 跨 app 复制粘贴的标准做法：`clipboard write "<text>"` → `app <name>` → `click <input_id>` → `key cmd+v`。
+      • 任务里出现 URL / 域名 / "搜索" / "网页" / "浏览器" / "打开 https://" 这类信号时，**必须**用 `browser "<task>"` 把整个任务委托给浏览器代理，不要自己 click 浏览器界面。
 """)
 
 
