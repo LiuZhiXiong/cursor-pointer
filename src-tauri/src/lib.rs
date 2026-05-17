@@ -31,6 +31,7 @@ pub fn run() {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 fx: Arc::new(api::FxQueue::new()),
                 ocr: Arc::new(api::OcrState::new()),
+                browser: Arc::new(api::BrowserQueue::new()),
                 app: app.handle().clone(),
             });
             tauri::async_runtime::spawn(async move {

@@ -349,3 +349,88 @@ def test_shell_uses_argv_list_not_shell_string():
     assert cmd_arg[0] == "ls"
     assert "/tmp" in cmd_arg
     assert kwargs.get("shell", False) is False
+
+
+# ---------------------------------------------------------------------------
+# CursorPointer client — browser bridge methods
+# ---------------------------------------------------------------------------
+
+
+def test_client_browser_enqueue_hits_correct_endpoint():
+    from cursor_pointer import CursorPointer
+    cp = CursorPointer()
+    with patch.object(cp, "_post", return_value={"id": "abc", "expires_at": 123}) as p:
+        result = cp.browser_enqueue("test cmd", timeout_seconds=30)
+    p.assert_called_once_with("/browser/enqueue", {"command": "test cmd", "timeout_seconds": 30})
+    assert result["id"] == "abc"
+
+
+def test_client_browser_result_status_hits_correct_endpoint():
+    from cursor_pointer import CursorPointer
+    cp = CursorPointer()
+    with patch.object(cp, "_get", return_value={"status": "done", "ok": True, "output": "x"}) as g:
+        result = cp.browser_result_status("abc")
+    g.assert_called_once_with("/browser/result/abc")
+    assert result["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# browser verb (bridge to WebClaw)
+# ---------------------------------------------------------------------------
+
+
+def test_browser_verb_enqueues_polls_and_returns():
+    mock_cp = MagicMock()
+    mock_cp.browser_enqueue.return_value = {"id": "abc", "expires_at": 999}
+    mock_cp.browser_result_status.return_value = {
+        "status": "done", "ok": True, "output": "page title is X"
+    }
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.time.sleep"), \
+         patch("run_agent.history", []) as fake_hist:
+        result = execute('browser "what is the page title?"', boxes=[])
+    assert result is None
+    mock_cp.browser_enqueue.assert_called_once()
+    enq_args = mock_cp.browser_enqueue.call_args
+    full_args_str = str(enq_args)
+    assert "what is the page title?" in full_args_str
+    assert any("browser" in h and "page title is X" in h for h in fake_hist)
+
+
+def test_browser_verb_expired_returns_error():
+    mock_cp = MagicMock()
+    mock_cp.browser_enqueue.return_value = {"id": "abc", "expires_at": 0}
+    mock_cp.browser_result_status.return_value = {"status": "expired"}
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.time.sleep"):
+        result = execute('browser "something"', boxes=[])
+    assert result is not None
+    assert "expired" in result.lower() or "webclaw" in result.lower()
+
+
+def test_browser_verb_pending_then_done():
+    mock_cp = MagicMock()
+    mock_cp.browser_enqueue.return_value = {"id": "abc", "expires_at": 999}
+    mock_cp.browser_result_status.side_effect = [
+        {"status": "pending"},
+        {"status": "done", "ok": True, "output": "done payload"},
+    ]
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.time.sleep"), \
+         patch("run_agent.history", []):
+        result = execute('browser "x"', boxes=[])
+    assert result is None
+    assert mock_cp.browser_result_status.call_count == 2
+
+
+def test_browser_verb_failed_result_returns_error():
+    mock_cp = MagicMock()
+    mock_cp.browser_enqueue.return_value = {"id": "abc", "expires_at": 999}
+    mock_cp.browser_result_status.return_value = {
+        "status": "done", "ok": False, "output": "DOM query failed"
+    }
+    with patch("run_agent.CursorPointer", return_value=mock_cp), \
+         patch("run_agent.time.sleep"):
+        result = execute('browser "bad selector"', boxes=[])
+    assert result is not None
+    assert "DOM query failed" in result

@@ -7,7 +7,7 @@ use axum::{
 };
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -98,11 +98,100 @@ impl FxQueue {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BrowserCommand {
+    pub id: String,
+    pub command: String,
+    pub enqueued_at: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BrowserResult {
+    pub id: String,
+    pub ok: bool,
+    pub output: String,
+    pub posted_at: u64,
+}
+
+pub struct BrowserQueue {
+    pub pending: Mutex<VecDeque<BrowserCommand>>,
+    pub results: Mutex<HashMap<String, BrowserResult>>,
+}
+
+impl BrowserQueue {
+    pub fn new() -> Self {
+        Self {
+            pending: Mutex::new(VecDeque::new()),
+            results: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
+    pub fn enqueue(&self, command: String, timeout_seconds: u64) -> BrowserCommand {
+        let now = Self::now();
+        let cmd = BrowserCommand {
+            id: uuid::Uuid::new_v4().to_string(),
+            command,
+            enqueued_at: now,
+            expires_at: now + timeout_seconds,
+        };
+        let mut pending = self.pending.lock().unwrap();
+        pending.retain(|c| c.expires_at > now);
+        pending.push_back(cmd.clone());
+        cmd
+    }
+
+    pub fn next(&self) -> Option<BrowserCommand> {
+        let now = Self::now();
+        let mut pending = self.pending.lock().unwrap();
+        pending.retain(|c| c.expires_at > now);
+        pending.pop_front()
+    }
+
+    pub fn store_result(&self, result: BrowserResult) {
+        let mut results = self.results.lock().unwrap();
+        let cutoff = Self::now().saturating_sub(60);
+        results.retain(|_, r| r.posted_at >= cutoff);
+        results.insert(result.id.clone(), result);
+    }
+
+    pub fn status(&self, id: &str) -> serde_json::Value {
+        let results = self.results.lock().unwrap();
+        if let Some(r) = results.get(id) {
+            return serde_json::json!({
+                "status": "done",
+                "ok": r.ok,
+                "output": r.output,
+            });
+        }
+        drop(results);
+        let pending = self.pending.lock().unwrap();
+        let now = Self::now();
+        let in_pending = pending.iter().any(|c| c.id == id && c.expires_at > now);
+        let expired = pending.iter().any(|c| c.id == id && c.expires_at <= now);
+        if in_pending {
+            serde_json::json!({ "status": "pending" })
+        } else if expired {
+            serde_json::json!({ "status": "expired" })
+        } else {
+            serde_json::json!({ "status": "expired" })
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub version: String,
     pub fx: Arc<FxQueue>,
     pub ocr: Arc<OcrState>,
+    pub browser: Arc<BrowserQueue>,
     pub app: tauri::AppHandle,
 }
 
@@ -516,6 +605,68 @@ async fn list_monitors() -> ApiResult<Vec<screen::MonitorInfo>> {
     Ok(Json(mons))
 }
 
+// ----- browser bridge (poll-based ↔ WebClaw) -----
+
+#[derive(Deserialize)]
+struct EnqueueReq {
+    command: String,
+    #[serde(default = "default_browser_timeout")]
+    timeout_seconds: u64,
+}
+
+fn default_browser_timeout() -> u64 { 30 }
+
+async fn browser_enqueue(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<EnqueueReq>,
+) -> Json<serde_json::Value> {
+    let cmd = s.browser.enqueue(b.command, b.timeout_seconds);
+    Json(serde_json::json!({
+        "id": cmd.id,
+        "expires_at": cmd.expires_at,
+    }))
+}
+
+async fn browser_next_command(
+    State(s): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    match s.browser.next() {
+        Some(c) => Json(serde_json::json!({ "id": c.id, "command": c.command })),
+        None => Json(serde_json::json!({})),
+    }
+}
+
+#[derive(Deserialize)]
+struct ResultReq {
+    id: String,
+    ok: bool,
+    output: String,
+}
+
+async fn browser_result(
+    State(s): State<Arc<AppState>>,
+    Json(b): Json<ResultReq>,
+) -> Json<serde_json::Value> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    s.browser.store_result(BrowserResult {
+        id: b.id,
+        ok: b.ok,
+        output: b.output,
+        posted_at: now,
+    });
+    Json(serde_json::json!({ "ok": true }))
+}
+
+async fn browser_result_status(
+    State(s): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    Json(s.browser.status(&id))
+}
+
 // ----- clipboard ---------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -591,6 +742,10 @@ pub async fn serve(state: Arc<AppState>, port: u16) -> anyhow::Result<()> {
         .route("/ocr/boxes", get(ocr_get).post(ocr_set))
         .route("/ocr/clear", post(ocr_clear))
         .route("/ocr/toggle", post(ocr_toggle))
+        .route("/browser/enqueue", post(browser_enqueue))
+        .route("/browser/next-command", get(browser_next_command))
+        .route("/browser/result", post(browser_result))
+        .route("/browser/result/:id", get(browser_result_status))
         .route("/clipboard/get", get(clipboard_get))
         .route("/clipboard/set", post(clipboard_set))
         .route("/ocr/run", post(ocr_run))

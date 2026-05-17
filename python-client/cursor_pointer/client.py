@@ -133,6 +133,15 @@ class CursorPointer:
     def clipboard_set(self, text: str) -> None:
         self._post("/clipboard/set", {"text": text})
 
+    # ----- browser bridge -----
+
+    def browser_enqueue(self, command: str, timeout_seconds: int = 30) -> dict:
+        return self._post("/browser/enqueue",
+                          {"command": command, "timeout_seconds": timeout_seconds})
+
+    def browser_result_status(self, cmd_id: str) -> dict:
+        return self._get(f"/browser/result/{cmd_id}")
+
     def scroll(
         self,
         dy: int = 0,

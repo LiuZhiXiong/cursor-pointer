@@ -248,6 +248,23 @@ def t_clipboard_set_get_roundtrip() -> None:
            "round-trip via pbcopy/pbpaste")
 
 
+def t_browser_enqueue_next_result_roundtrip() -> None:
+    """Full bridge round-trip without WebClaw — we play both sides."""
+    enq = post("/browser/enqueue",
+               {"command": "smoke-test", "timeout_seconds": 10}).json()
+    cmd_id = enq.get("id")
+    nxt = get("/browser/next-command").json()
+    pulled_id = nxt.get("id")
+    post("/browser/result",
+         {"id": cmd_id, "ok": True, "output": "smoke-test-output"})
+    final = get(f"/browser/result/{cmd_id}").json()
+    ok = (cmd_id == pulled_id and final.get("status") == "done"
+          and final.get("output") == "smoke-test-output")
+    record("/browser/* round-trip", PASS if ok else FAIL,
+           f"enq_id={cmd_id and cmd_id[:8]} pulled={pulled_id and pulled_id[:8]} final={final.get('status')}",
+           "enqueue → next → result → status")
+
+
 # --- run all ---
 def main() -> int:
     print(f"🔍 smoke-testing cursor-pointer @ {API}\n")
@@ -280,6 +297,7 @@ def main() -> int:
         t_ocr_set_clear_toggle,
         t_ocr_run,
         t_clipboard_set_get_roundtrip,
+        t_browser_enqueue_next_result_roundtrip,
     ]
 
     for t in tests:
