@@ -31,7 +31,14 @@ for i in $(seq 1 60); do
     STATE=$(echo "$STATUS" | sed -E 's/.*"status":"([^"]+)".*/\1/')
     case "$STATE" in
         done) echo "[t=$((i/2))s] ✓ $STATUS"; exit 0 ;;
-        expired) echo "[t=$((i/2))s] ✗ expired — WebClaw not polling? $STATUS"; exit 2 ;;
+        expired)
+            # Only fatal if persisted past 10s — early expired means we
+            # raced the drain/result window (legacy queues did this, new
+            # queue uses in_progress, but old binaries still around).
+            if [ $i -gt 20 ]; then
+                echo "[t=$((i/2))s] ✗ expired — WebClaw not polling? $STATUS"; exit 2
+            fi
+            ;;
         pending) ;;
         *) echo "[t=$((i/2))s] ? $STATUS" ;;
     esac
