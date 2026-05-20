@@ -1065,49 +1065,6 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     verb = m["verb"].lower()
     arg = m["arg"]
 
-    if verb == "app":
-        name = ""
-        if arg:
-            name = arg.strip('"').strip()
-        if not name:
-            idx = action_str.lower().find("app")
-            if idx >= 0:
-                rest = action_str[idx + 3:].strip()
-                name = rest.strip('"\' ')
-        if not name:
-            return "app needs <name>"
-
-        # Decide initial syntax based on shape: dot = bundle id, otherwise display name.
-        is_bundle = "." in name
-        if is_bundle:
-            script = f'tell application id "{name}" to activate'
-        else:
-            script = f'tell application "{name}" to activate'
-
-        # Try 1 — osascript
-        try:
-            subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True, timeout=5, check=True,
-            )
-            return None
-        except subprocess.TimeoutExpired:
-            return f"app activate {name!r} timed out (5s)"
-        except subprocess.CalledProcessError as e_osa:
-            osa_stderr = (e_osa.stderr or b"").decode(errors="replace")[:80].strip()
-            # Try 2 — `open -a` (LaunchServices fuzzy-resolves display names AND bundle IDs)
-            try:
-                subprocess.run(
-                    ["open", "-a", name],
-                    capture_output=True, timeout=5, check=True,
-                )
-                return None
-            except subprocess.TimeoutExpired:
-                return f"app activate {name!r} timed out (5s)"
-            except subprocess.CalledProcessError as e_open:
-                open_stderr = (e_open.stderr or b"").decode(errors="replace")[:80].strip()
-                return (f"app activate failed: osascript={osa_stderr!r} "
-                        f"open={open_stderr!r}")
     if verb == "clipboard":
         sub = ""
         if arg:
