@@ -96,7 +96,7 @@ def test_executor_structured_first_skips_pixel():
     assert outcome.used_path == "ax_press"
     cp.click.assert_not_called()
     ax_press.assert_called_once()
-    assert outcome.status in ("ok", "executed_unverified")
+    assert outcome.status == "ok"
 
 
 def test_executor_pixel_fallback_when_no_ax_ref():
@@ -115,7 +115,7 @@ def test_executor_pixel_fallback_when_no_ax_ref():
     assert outcome.used_path == "pixel"
     cp.click.assert_called_once()
     ax_press.assert_not_called()
-    assert outcome.status in ("ok", "executed_unverified")
+    assert outcome.status == "ok"
 
 
 def test_executor_pixel_fallback_when_ax_press_returns_false():
@@ -133,4 +133,80 @@ def test_executor_pixel_fallback_when_ax_press_returns_false():
     outcome = ex.execute(_make_intent())
     assert outcome.used_path == "pixel"
     cp.click.assert_called_once()
-    assert outcome.status in ("ok", "executed_unverified")
+    assert outcome.status == "ok"
+
+
+def test_executor_verify_ok_via_focus_change():
+    cp = MagicMock()
+    screenshot_fn = MagicMock(return_value=_png())
+    ax_press = MagicMock(return_value=True)
+    focused_ax = MagicMock(side_effect=[
+        {"id": "before-elem"}, {"id": "after-elem"},
+    ])
+    detect = MagicMock(return_value=[_elem()])
+
+    ex = ActionExecutor(cp=cp, screenshot_fn=screenshot_fn,
+                        ax_press_fn=ax_press, focused_ax_fn=focused_ax,
+                        detect_elements_fn=detect)
+    outcome = ex.execute(_make_intent())
+    assert outcome.status == "ok"
+    assert outcome.used_path == "ax_press"
+
+
+def test_executor_verify_ok_via_roi_delta():
+    """ROI changed (focus stays same)."""
+    grey = _png(w=400, h=400, color=(180, 180, 180))
+    img = Image.new("RGB", (400, 400), (180, 180, 180))
+    # Add a black checker into the bbox (100,200,80,30).
+    for x in range(100, 180):
+        for y in range(200, 230):
+            if (x + y) % 4 < 2:
+                img.putpixel((x, y), (0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    diff = buf.getvalue()
+
+    cp = MagicMock()
+    screenshot_fn = MagicMock(side_effect=[grey, diff])
+    ax_press = MagicMock(return_value=True)
+    focused_ax = MagicMock(return_value={"id": "same"})  # focus did NOT change
+    detect = MagicMock(return_value=[_elem()])
+
+    ex = ActionExecutor(cp=cp, screenshot_fn=screenshot_fn,
+                        ax_press_fn=ax_press, focused_ax_fn=focused_ax,
+                        detect_elements_fn=detect)
+    outcome = ex.execute(_make_intent())
+    assert outcome.status == "ok", f"got {outcome.status}: {outcome.error}"
+
+
+def test_executor_verify_failed_neither_focus_nor_roi():
+    same = _png()
+    cp = MagicMock()
+    screenshot_fn = MagicMock(side_effect=[same, same])
+    ax_press = MagicMock(return_value=True)
+    focused_ax = MagicMock(return_value={"id": "same"})
+    detect = MagicMock(return_value=[_elem()])
+
+    ex = ActionExecutor(cp=cp, screenshot_fn=screenshot_fn,
+                        ax_press_fn=ax_press, focused_ax_fn=focused_ax,
+                        detect_elements_fn=detect)
+    outcome = ex.execute(_make_intent())
+    assert outcome.status == "verify_failed"
+
+
+def test_executor_permission_denied_surfaces_via_verify():
+    """Black-frame after action → exec_error permission_denied."""
+    normal = _png()
+    black = _png(color=(0, 0, 0))
+    cp = MagicMock()
+    screenshot_fn = MagicMock(side_effect=[normal, black])
+    ax_press = MagicMock(return_value=True)
+    focused_ax = MagicMock(return_value={"id": "x"})
+    detect = MagicMock(return_value=[_elem()])
+
+    ex = ActionExecutor(cp=cp, screenshot_fn=screenshot_fn,
+                        ax_press_fn=ax_press, focused_ax_fn=focused_ax,
+                        detect_elements_fn=detect)
+    outcome = ex.execute(_make_intent())
+    assert outcome.status == "exec_error"
+    assert "permission_denied" in (outcome.error or "")

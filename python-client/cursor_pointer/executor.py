@@ -119,16 +119,56 @@ class ActionExecutor:
 
     def _verify_click(self, intent, start, hit, drift, used_path,
                       before_focus, before_hash):
-        # Stub returning executed_unverified — Task 6 fills this in.
+        from . import anchors
+
+        # Small settle delay — let the UI react.
+        time.sleep(0.05)
+
+        after_focus = self.focused_ax_fn()
+        after_shot = self.screenshot_fn()
+
+        # Permission revoked mid-action surfaces here.
+        if anchors.is_permission_denied_frame(after_shot):
+            return Outcome(
+                status="exec_error",
+                intent=intent,
+                elapsed_ms=int((time.time() - start) * 1000),
+                relocate_drift_px=drift,
+                used_path=used_path,
+                before_hash=before_hash,
+                after_hash=None,
+                error="permission_denied: screen_recording",
+            )
+
+        after_hash = anchors.average_hash_hex(
+            after_shot, bbox=(hit["x"], hit["y"], hit["w"], hit["h"])
+        )
+
+        focus_changed = _focus_signature(before_focus) != _focus_signature(after_focus)
+        roi_distance = anchors.hamming_distance_hex(before_hash, after_hash)
+        # roi_pixel_delta_min ~ fraction of bits flipped. 0.02 of 64 ≈ 1.3, so
+        # a distance ≥ 2 satisfies the default threshold.
+        roi_threshold_bits = max(1, int(intent.expect.roi_pixel_delta_min * 64))
+        roi_changed = roi_distance >= roi_threshold_bits
+
+        verified = False
+        if intent.expect.focus_changes and focus_changed:
+            verified = True
+        if intent.expect.roi_pixel_delta_min > 0 and roi_changed:
+            verified = True
+
+        status = "ok" if verified else "verify_failed"
         return Outcome(
-            status="executed_unverified",
+            status=status,
             intent=intent,
             elapsed_ms=int((time.time() - start) * 1000),
             relocate_drift_px=drift,
             used_path=used_path,
             before_hash=before_hash,
-            after_hash=None,
-            error=None,
+            after_hash=after_hash,
+            error=None if verified else
+                  f"no verifiable change (focus_changed={focus_changed}, "
+                  f"roi_distance={roi_distance}/{roi_threshold_bits})",
         )
 
     # -------- type pipeline (Task 7) --------
@@ -140,3 +180,16 @@ class ActionExecutor:
             elapsed_ms=int((time.time() - start) * 1000),
             error="type pipeline not yet implemented",
         )
+
+
+def _focus_signature(focus_obj) -> str:
+    """Reduce a focused-AX dict to a stable equality key."""
+    if focus_obj is None:
+        return ""
+    if isinstance(focus_obj, dict):
+        return (
+            f"{focus_obj.get('id','')}|"
+            f"{focus_obj.get('role','')}|"
+            f"{focus_obj.get('label','')}"
+        )
+    return repr(focus_obj)
