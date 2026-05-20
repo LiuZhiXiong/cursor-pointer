@@ -171,14 +171,82 @@ class ActionExecutor:
                   f"roi_distance={roi_distance}/{roi_threshold_bits})",
         )
 
-    # -------- type pipeline (Task 7) --------
+    # -------- type pipeline --------
 
     def _execute_type(self, intent: Intent, start: float) -> Outcome:
+        from . import anchors
+
+        text = intent.payload.get("text", "")
+        if not text:
+            return Outcome(
+                status="exec_error",
+                intent=intent,
+                elapsed_ms=int((time.time() - start) * 1000),
+                error="type intent missing payload.text",
+            )
+
+        used_path = "none"
+
+        # Optional: focus a target element first.
+        if intent.target is not None:
+            fresh = self.detect_elements_fn() if self.detect_elements_fn else []
+            hit, _drift = anchors.find_target_match(
+                intent.target, fresh, self.drift_radius_px
+            )
+            if hit is None:
+                return Outcome(
+                    status="mismatch_target",
+                    intent=intent,
+                    elapsed_ms=int((time.time() - start) * 1000),
+                    used_path="none",
+                    error="type target signature did not match any current element",
+                )
+            cx = hit["x"] + hit["w"] // 2
+            cy = hit["y"] + hit["h"] // 2
+            if hit.get("ax_ref") is not None and self.ax_press_fn(hit["ax_ref"]):
+                used_path = "ax_press"
+            else:
+                try:
+                    self.cp.click(cx, cy)
+                    used_path = "pixel"
+                except Exception as e:
+                    return Outcome(
+                        status="exec_error",
+                        intent=intent,
+                        elapsed_ms=int((time.time() - start) * 1000),
+                        used_path="none",
+                        error=f"focus click failed: {e}",
+                    )
+            time.sleep(0.05)
+
+        # Type the text.
+        try:
+            self.cp.type_text(text)
+        except Exception as e:
+            return Outcome(
+                status="exec_error",
+                intent=intent,
+                elapsed_ms=int((time.time() - start) * 1000),
+                used_path=used_path,
+                error=f"type_text failed: {e}",
+            )
+
+        # Verify — focused AX value should contain the typed text.
+        time.sleep(0.05)
+        focused = self.focused_ax_fn() or {}
+        value = focused.get("value") if isinstance(focused, dict) else None
+        expected = intent.expect.typed_text_in_focus or text
+        verified = bool(value and expected in value)
+        status = "ok" if verified else "verify_failed"
+
         return Outcome(
-            status="exec_error",
+            status=status,
             intent=intent,
             elapsed_ms=int((time.time() - start) * 1000),
-            error="type pipeline not yet implemented",
+            used_path=used_path,
+            error=None if verified else
+                  f"typed text {expected!r} not present in focused AXValue "
+                  f"{(value or '')[:60]!r}",
         )
 
 

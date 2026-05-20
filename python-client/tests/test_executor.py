@@ -194,6 +194,67 @@ def test_executor_verify_failed_neither_focus_nor_roi():
     assert outcome.status == "verify_failed"
 
 
+def _make_type_intent(text: str = "hello", with_target: bool = False) -> Intent:
+    target = None
+    if with_target:
+        target = TargetSig(
+            element_id=5, bbox=(100, 200, 80, 30),
+            ax_path=None, role="AXTextField", ocr_text="Search",
+            visual_hash="0" * 16,
+        )
+    return Intent(
+        kind="type",
+        target=target,
+        payload={"text": text},
+        expect=ExpectSig(focus_changes=False, roi_pixel_delta_min=0.0,
+                         typed_text_in_focus=text),
+        raw_action=f'type "{text}"',
+    )
+
+
+def test_executor_type_no_target_verifies_via_axvalue():
+    cp = MagicMock()
+    screenshot_fn = MagicMock(return_value=_png())
+    ax_press = MagicMock(return_value=False)
+    focused_ax = MagicMock(return_value={"value": "previous text hello"})
+
+    ex = ActionExecutor(cp=cp, screenshot_fn=screenshot_fn,
+                        ax_press_fn=ax_press, focused_ax_fn=focused_ax)
+    outcome = ex.execute(_make_type_intent("hello"))
+    assert outcome.status == "ok"
+    cp.type_text.assert_called_once_with("hello")
+
+
+def test_executor_type_verify_failed_when_axvalue_missing_text():
+    cp = MagicMock()
+    screenshot_fn = MagicMock(return_value=_png())
+    ax_press = MagicMock(return_value=False)
+    focused_ax = MagicMock(return_value={"value": "unrelated text"})
+
+    ex = ActionExecutor(cp=cp, screenshot_fn=screenshot_fn,
+                        ax_press_fn=ax_press, focused_ax_fn=focused_ax)
+    outcome = ex.execute(_make_type_intent("hello"))
+    assert outcome.status == "verify_failed"
+
+
+def test_executor_type_with_target_focuses_then_types():
+    cp = MagicMock()
+    screenshot_fn = MagicMock(return_value=_png())
+    ax_press = MagicMock(return_value=True)
+    focused_ax = MagicMock(return_value={"value": "hello"})
+    detect = MagicMock(return_value=[
+        _elem(eid=5, role="AXTextField", label="Search")
+    ])
+
+    ex = ActionExecutor(cp=cp, screenshot_fn=screenshot_fn,
+                        ax_press_fn=ax_press, focused_ax_fn=focused_ax,
+                        detect_elements_fn=detect)
+    outcome = ex.execute(_make_type_intent("hello", with_target=True))
+    assert outcome.status == "ok"
+    ax_press.assert_called_once()
+    cp.type_text.assert_called_once_with("hello")
+
+
 def test_executor_permission_denied_surfaces_via_verify():
     """Black-frame after action → exec_error permission_denied."""
     normal = _png()
