@@ -16,7 +16,7 @@ from .base import Verb, VerbContext, make_placeholder_intent
 from .done import DONE_VERB, WAIT_VERB
 from .scroll import SCROLL_TO_VERB, SCROLL_VERB
 from .mouse import DRAG_VERB
-from .system import APP_VERB
+from .system import APP_VERB, CLIPBOARD_VERB
 
 REGISTRY: tuple[Verb, ...] = (
     DONE_VERB,
@@ -25,6 +25,7 @@ REGISTRY: tuple[Verb, ...] = (
     SCROLL_VERB,
     DRAG_VERB,
     APP_VERB,
+    CLIPBOARD_VERB,
 )
 
 

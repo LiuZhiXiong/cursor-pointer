@@ -76,3 +76,81 @@ APP_VERB = Verb(
     handle=_handle_app,
     grammar_hint="app <name>           # 启动或切换到应用（如 NeteaseMusic / Finder / Safari）",
 )
+
+
+# ---------- clipboard ----------
+
+_CLIPBOARD_RE = re.compile(r"^\s*clipboard(?:\s+(\S+))?(?:\s+(.*))?$", re.IGNORECASE)
+# Relaxed write payload regex — tolerates missing closing quote (MiniMax
+# sometimes drops it).
+_CLIPBOARD_WRITE_PAYLOAD_RE = re.compile(r'"([^"]*)"?', re.IGNORECASE)
+
+
+def _parse_clipboard(s: str) -> Optional[dict]:
+    m = _CLIPBOARD_RE.match(s)
+    if not m:
+        return None
+    sub = (m.group(1) or "").strip().strip('"').lower()
+    rest = (m.group(2) or "").strip()
+    if sub == "read":
+        return {"op": "read", "text": None}
+    if sub == "write":
+        pm = _CLIPBOARD_WRITE_PAYLOAD_RE.search(rest)
+        return {"op": "write", "text": pm.group(1) if pm else ""}
+    # Any other sub (or no sub) — let the handler emit the helpful error.
+    return {"op": "_invalid", "text": sub}
+
+
+def _handle_clipboard(args: dict, ctx: VerbContext) -> Outcome:
+    op = args["op"]
+    if op == "read":
+        try:
+            text = ctx.cp.clipboard_get()
+        except Exception as e:
+            return Outcome(
+                status="exec_error",
+                intent=make_placeholder_intent("clipboard read"),
+                error=f"clipboard read failed: {e}",
+            )
+        ctx.history.append(f"clipboard read → {text[:80]!r}")
+        return Outcome(
+            status="executed_unverified",
+            intent=make_placeholder_intent("clipboard read"),
+            error=None,
+        )
+    if op == "write":
+        text = args.get("text") or ""
+        if not text:
+            return Outcome(
+                status="exec_error",
+                intent=make_placeholder_intent("clipboard write"),
+                error='clipboard write needs quoted text: clipboard write "..."',
+            )
+        try:
+            ctx.cp.clipboard_set(text)
+        except Exception as e:
+            return Outcome(
+                status="exec_error",
+                intent=make_placeholder_intent(f'clipboard write "{text}"'),
+                error=f"clipboard write failed: {e}",
+            )
+        return Outcome(
+            status="executed_unverified",
+            intent=make_placeholder_intent(f'clipboard write "{text}"'),
+            error=None,
+        )
+    # _invalid (or anything else) — emit helpful error listing valid subs.
+    sub = args.get("text") or ""
+    return Outcome(
+        status="exec_error",
+        intent=make_placeholder_intent(f"clipboard {sub}"),
+        error=f"clipboard needs 'read' or 'write \"...\"', got {sub!r}",
+    )
+
+
+CLIPBOARD_VERB = Verb(
+    name="clipboard",
+    parse=_parse_clipboard,
+    handle=_handle_clipboard,
+    grammar_hint='clipboard read / clipboard write "<text>"  # 剪贴板读写',
+)

@@ -1065,27 +1065,6 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     verb = m["verb"].lower()
     arg = m["arg"]
 
-    if verb == "clipboard":
-        sub = ""
-        if arg:
-            sub = arg.strip('"').lower()
-        if sub == "read":
-            try:
-                text = cp.clipboard_get()
-            except Exception as e:
-                return f"clipboard read failed: {e}"
-            history.append(f"clipboard read → {text[:80]!r}")
-            return None
-        if sub == "write":
-            m = re.search(r'write\s+"([^"]*)"?', action_str, re.IGNORECASE)
-            if not m or not m.group(1):
-                return "clipboard write needs quoted text: clipboard write \"...\""
-            try:
-                cp.clipboard_set(m.group(1))
-            except Exception as e:
-                return f"clipboard write failed: {e}"
-            return None
-        return f"clipboard needs 'read' or 'write \"...\"', got {sub!r}"
     if verb == "shell":
         import shlex
         idx = action_str.lower().find("shell")
