@@ -11,6 +11,12 @@ __all__ = [
     "Session",
     "annotate",
     "click_element",
+    # Closed-loop action contract
+    "ActionExecutor",
+    "ExpectSig",
+    "Intent",
+    "Outcome",
+    "TargetSig",
 ]
 __version__ = "0.1.0"
 
@@ -23,4 +29,10 @@ def __getattr__(name):
     if name == "Session":
         from .session import Session
         return Session
+    if name == "ActionExecutor":
+        from .executor import ActionExecutor
+        return ActionExecutor
+    if name in {"ExpectSig", "Intent", "Outcome", "TargetSig"}:
+        from . import intent as _i
+        return getattr(_i, name)
     raise AttributeError(name)
