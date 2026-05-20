@@ -1065,63 +1065,6 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     verb = m["verb"].lower()
     arg = m["arg"]
 
-    if verb == "scroll":
-        # `scroll down` / `scroll up` / `scroll <N>` (positive = down).
-        # Default step = 6 wheel ticks ≈ half a viewport.
-        dy = 0
-        if arg is None:
-            dy = -6
-        elif arg.lower() == "down":
-            dy = -6
-        elif arg.lower() == "up":
-            dy = 6
-        elif arg.isdigit():
-            dy = -int(arg)  # numeric arg = down-by-N
-        else:
-            return f"scroll arg must be up/down/N, got {arg!r}"
-        # Anchor cursor over the target app's content area before scrolling —
-        # wheel events go to whatever window is under the cursor. Without this,
-        # scrolls land on iTerm / the overlay and silently do nothing.
-        # Use the median center of detected boxes — that's the bulk of the
-        # target app's content.
-        if boxes:
-            xs = sorted(b["x"] + b["w"] // 2 for b in boxes)
-            ys = sorted(b["y"] + b["h"] // 2 for b in boxes)
-            ax, ay = xs[len(xs) // 2], ys[len(ys) // 2]
-            cp.move(ax, ay)
-            time.sleep(0.15)
-            _log(f"  → scroll anchor ({ax},{ay}) dy={dy}")
-        cp.scroll(dy=dy)
-        return None
-    if verb == "scroll_to":
-        # `scroll_to <id>` — AXScrollToVisible on that element's AX handle.
-        # The accessibility action asks the app to scroll its container so
-        # the target is in-view, regardless of where the cursor is.
-        try:
-            eid = int(arg) if arg else None
-        except ValueError:
-            eid = None
-        if eid is None:
-            return f"scroll_to needs element id, got {arg!r}"
-        el = next((b for b in boxes if b["id"] == eid), None)
-        if not el:
-            return f"no element with id {eid}"
-        ax_ref = el.get("ax_ref")
-        if ax_ref is None:
-            return f"#{eid} has no AX handle — can't scroll_to"
-        try:
-            from ApplicationServices import (  # type: ignore
-                AXUIElementCopyActionNames,
-                AXUIElementPerformAction,
-            )
-            err, actions = AXUIElementCopyActionNames(ax_ref, None)
-            if err == 0 and actions and "AXScrollToVisible" in actions:
-                AXUIElementPerformAction(ax_ref, "AXScrollToVisible")
-                _log(f"  → AXScrollToVisible '{el.get('label','')}' (#{eid})")
-                return None
-        except Exception as e:
-            return f"AXScrollToVisible crashed: {e}"
-        return f"#{eid} does not support AXScrollToVisible"
     if verb == "drag":
         f, t = _parse_drag(action_str)
         if f is None:

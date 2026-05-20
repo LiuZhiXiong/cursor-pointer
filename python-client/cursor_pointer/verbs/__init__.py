@@ -14,10 +14,13 @@ from .base import Verb, VerbContext, make_placeholder_intent
 # Order matters: longer-prefix / more-specific verbs go FIRST so the
 # first-match-wins dispatch can't be tricked by a shorter prefix.
 from .done import DONE_VERB, WAIT_VERB
+from .scroll import SCROLL_TO_VERB, SCROLL_VERB
 
 REGISTRY: tuple[Verb, ...] = (
     DONE_VERB,
     WAIT_VERB,
+    SCROLL_TO_VERB,
+    SCROLL_VERB,
 )
 
 
