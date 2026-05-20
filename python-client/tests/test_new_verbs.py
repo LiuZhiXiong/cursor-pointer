@@ -26,67 +26,63 @@ def test_client_clipboard_set_hits_correct_endpoint():
 
 
 # ---------------------------------------------------------------------------
-# ACTION_RE — recognize the new verbs
+# Verb registry — dispatch routes the new verbs
+# (The ACTION_RE regex was deleted in the verb registry migration.
+#  Each verb now owns its own parser; per-verb tests live in tests/verbs/.)
 # ---------------------------------------------------------------------------
 
-from run_agent import ACTION_RE
+from cursor_pointer.verbs import REGISTRY
+from cursor_pointer.verbs.click import CLICK_VERB
+from cursor_pointer.verbs.mouse import DRAG_VERB
+from cursor_pointer.verbs.system import APP_VERB, CLIPBOARD_VERB, SHELL_VERB
 
 
-def test_action_re_recognizes_drag():
-    m = ACTION_RE.search("drag 5 to 9")
-    assert m is not None
-    assert m["verb"].lower() == "drag"
+def test_registry_recognizes_drag():
+    assert DRAG_VERB.parse("drag 5 to 9") == {"from_id": 5, "to_id": 9}
 
 
-def test_action_re_recognizes_app():
-    m = ACTION_RE.search("app NeteaseMusic")
-    assert m is not None
-    assert m["verb"].lower() == "app"
+def test_registry_recognizes_app():
+    assert APP_VERB.parse("app NeteaseMusic") == {"name": "NeteaseMusic"}
 
 
-def test_action_re_recognizes_clipboard_read():
-    m = ACTION_RE.search("clipboard read")
-    assert m is not None
-    assert m["verb"].lower() == "clipboard"
-    assert m["arg"] == "read"
+def test_registry_recognizes_clipboard_read():
+    assert CLIPBOARD_VERB.parse("clipboard read") == {"op": "read", "text": None}
 
 
-def test_action_re_recognizes_clipboard_write():
-    m = ACTION_RE.search('clipboard write "hello"')
-    assert m is not None
-    assert m["verb"].lower() == "clipboard"
+def test_registry_recognizes_clipboard_write():
+    assert CLIPBOARD_VERB.parse('clipboard write "hello"') == \
+        {"op": "write", "text": "hello"}
 
 
-def test_action_re_recognizes_shell():
-    m = ACTION_RE.search("shell ls -la")
-    assert m is not None
-    assert m["verb"].lower() == "shell"
+def test_registry_recognizes_shell():
+    assert SHELL_VERB.parse("shell ls -la") == {"cmd": "ls -la"}
 
 
-def test_action_re_still_recognizes_existing_click():
+def test_registry_still_recognizes_existing_click():
     """Don't break existing verbs."""
-    m = ACTION_RE.search("click 7")
-    assert m["verb"].lower() == "click"
-    assert m["arg"] == "7"
+    assert CLICK_VERB.parse("click 7") == {"id": 7}
 
 
 # ---------------------------------------------------------------------------
-# drag verb
+# drag verb — legacy module-level helpers were removed; parser lives on
+# DRAG_VERB. These tests now exercise the parser directly.
 # ---------------------------------------------------------------------------
 
-from run_agent import _parse_drag, execute
+from run_agent import execute
 
 
 def test_parse_drag_basic():
-    assert _parse_drag("drag 5 to 9") == (5, 9)
+    assert DRAG_VERB.parse("drag 5 to 9") == {"from_id": 5, "to_id": 9}
 
 
 def test_parse_drag_extra_words():
-    assert _parse_drag("drag 5 to 9 quickly") == (5, 9)
+    # The new parser is strict (anchored). "drag 5 to 9 quickly" no longer
+    # matches — VLM emits clean grammar, extra words are not expected.
+    assert DRAG_VERB.parse("drag 5 to 9 quickly") is None
 
 
 def test_parse_drag_missing_to():
-    assert _parse_drag("drag 5 9") == (None, None)
+    assert DRAG_VERB.parse("drag 5 9") is None
 
 
 def test_drag_invokes_cp_drag():

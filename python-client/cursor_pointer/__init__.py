@@ -17,6 +17,12 @@ __all__ = [
     "Intent",
     "Outcome",
     "TargetSig",
+    # Verb registry
+    "REGISTRY",
+    "dispatch",
+    "build_grammar_section",
+    "Verb",
+    "VerbContext",
 ]
 __version__ = "0.1.0"
 
@@ -35,4 +41,8 @@ def __getattr__(name):
     if name in {"ExpectSig", "Intent", "Outcome", "TargetSig"}:
         from . import intent as _i
         return getattr(_i, name)
+    if name in {"REGISTRY", "dispatch", "build_grammar_section",
+                "Verb", "VerbContext"}:
+        from . import verbs as _v
+        return getattr(_v, name)
     raise AttributeError(name)

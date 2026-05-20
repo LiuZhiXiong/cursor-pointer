@@ -809,16 +809,6 @@ def ask_minimax(image_path: Path, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Shell verb safety — only these commands are allowed. Read-only by design.
-# ---------------------------------------------------------------------------
-
-SHELL_WHITELIST = frozenset({
-    "ls", "cat", "echo", "pwd", "which",
-    "head", "tail", "grep", "find", "file",
-    "wc", "date", "hostname", "whoami",
-})
-
-# ---------------------------------------------------------------------------
 # Multi-step planner — sub-goal parsing (worker VLM emits two lines per step)
 # ---------------------------------------------------------------------------
 
@@ -1019,60 +1009,30 @@ def verify_done(goal: str, done_reason: str, target_pid: int,
 # Action parsing / execution
 # ---------------------------------------------------------------------------
 
-ACTION_RE = re.compile(
-    r"(?ix)"
-    r"(?:^|\b)"
-    r"(?P<verb>scroll_to|scroll|click|dclick|rclick|drag|app|clipboard|shell|browser|type|key|done|wait)"
-    r"\b\s*"
-    r"(?P<arg>up|down|left|right|read|write|\d+|\".+?\")?",
-)
-
-
-def _parse_drag(action_str: str) -> tuple[int | None, int | None]:
-    """Parse 'drag <from_id> to <to_id>'. Returns (None, None) on mismatch."""
-    m = re.search(r"drag\s+(\d+)\s+to\s+(\d+)", action_str, re.IGNORECASE)
-    if not m:
-        return None, None
-    return int(m.group(1)), int(m.group(2))
-
-
 def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
-    """Parse and run one action. Return None on success, error msg on failure."""
-    # New-style: try the verb registry first. Verbs already migrated will
-    # route through dispatch() and short-circuit here. Un-migrated verbs
-    # fall through to the legacy if-elif chain below until Task 11.
+    """Parse and run one action. Return None on success, error msg on failure.
+
+    All verb dispatch goes through the cursor_pointer.verbs registry.
+    """
     from cursor_pointer.verbs import dispatch as _dispatch, VerbContext as _VerbContext
-    _ctx = _VerbContext(
+    ctx = _VerbContext(
         cp=CursorPointer(),
         boxes=boxes,
         executor=_get_executor(),
         history=history,
         log=_log,
     )
-    _outcome = _dispatch(action_str, _ctx)
-    _is_unknown = (
-        _outcome.status == "exec_error"
-        and "unknown action" in (_outcome.error or "")
-    )
-    if not _is_unknown:
-        return _legacy_return_from_outcome(_outcome)
-
-    cp = CursorPointer()
-
-    m = ACTION_RE.search(action_str)
-    if not m:
-        return f"could not parse action: {action_str!r}"
-    verb = m["verb"].lower()
-    arg = m["arg"]
-
-    return f"unknown verb {verb!r}"
+    outcome = _dispatch(action_str, ctx)
+    return _legacy_return_from_outcome(outcome)
 
 
 # ---------------------------------------------------------------------------
 # Goal loop
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = textwrap.dedent("""\
+from cursor_pointer.verbs import build_grammar_section as _build_grammar
+
+SYSTEM_PROMPT = textwrap.dedent(f"""\
     你是一个能操作 macOS 桌面的自动化 agent。你看到的图片是当前屏幕，
     粉色编号方框是你可以交互的元素（按钮/链接/输入框等）。
 
@@ -1085,21 +1045,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
 
     action 行的合法语法（任选一个）:
 
-        click <id>          # 点击编号为 id 的元素
-        dclick <id>         # 双击
-        rclick <id>         # 右键
-        scroll <up|down|N>  # 滚动当前页面（默认半屏向下）— 探索视口外内容首选
-        scroll_to <id>      # 把已编号元素精确滚入视口（仅当元素已在清单里）
-        drag <id1> to <id2>  # 拖拽：从元素1拖到元素2
-        app <name>           # 启动或切换到应用（如 NeteaseMusic / Finder / Safari）
-        clipboard read       # 读当前剪贴板，结果会出现在历史里
-        clipboard write "<text>"  # 写入剪贴板
-        shell <cmd>          # 仅限只读命令：ls/cat/echo/pwd/head/tail/grep/find/wc/date 等
-        browser "<task>"     # 委托 WebClaw 在浏览器里执行（需 WebClaw 启用 Remote Control）
-        type "<text>"       # 在当前焦点处输入文字
-        key <name>          # 按一个键（如 enter / escape / space / cmd+a）
-        wait <seconds>      # 等几秒
-        done <短结论>        # 任务完成或放弃
+{_build_grammar()}
 
     重要规则：
       • 严格两行：第一行 subgoal: ...，第二行 action: ...，没有多余行、没有 markdown。
@@ -1410,8 +1356,8 @@ def main() -> int:
         # Post-click verification — AX-only, no screenshot needed.
         if action.startswith(("click", "dclick", "rclick")) and result is None:
             time.sleep(1.0)
-            m = ACTION_RE.search(action)
-            eid = int(m["arg"]) if (m and m["arg"] and m["arg"].isdigit()) else None
+            _m = re.search(r"^\s*[dr]?click\s+(\d+)", action, re.IGNORECASE)
+            eid = int(_m.group(1)) if _m else None
             el = next((b for b in boxes if b["id"] == eid), None) if eid else None
             if el:
                 cx = el["x"] + el["w"] // 2
