@@ -1065,44 +1065,6 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     verb = m["verb"].lower()
     arg = m["arg"]
 
-    if verb == "browser":
-        idx = action_str.lower().find("browser")
-        rest = action_str[idx + 7:].strip() if idx >= 0 else ""
-        m = re.search(r'"([^"]*)"?', rest)
-        cmd_text = m.group(1) if m else rest.strip()
-        if not cmd_text:
-            return 'browser needs a quoted command, e.g. browser "what is the title?"'
-
-        try:
-            # 90s queue timeout — browser tasks routinely take 30-60s
-            # (page load + LLM scrape + reasoning). Shorter values make
-            # the queue declare 'expired' while WebClaw is still working.
-            enq = cp.browser_enqueue(cmd_text, timeout_seconds=90)
-        except Exception as e:
-            return f"browser enqueue failed: {e}"
-        cmd_id = enq.get("id")
-        if not cmd_id:
-            return f"browser enqueue returned no id: {enq!r}"
-
-        deadline = time.time() + 60   # bumped from 35 — give WebClaw time
-        while time.time() < deadline:
-            try:
-                st = cp.browser_result_status(cmd_id)
-            except Exception as e:
-                return f"browser result poll failed: {e}"
-            status = st.get("status")
-            if status == "done":
-                output = (st.get("output") or "")[:200]
-                if not st.get("ok"):
-                    return f"browser failed: {output}"
-                history.append(f"browser {cmd_text[:40]!r} → {output!r}")
-                return None
-            if status == "expired":
-                return ("browser command expired (no WebClaw client polling? "
-                        "enable Remote Control in WebClaw sidepanel)")
-            # pending or in_progress → keep polling
-            time.sleep(0.5)
-        return "browser timed out waiting for WebClaw"
     if verb == "type":
         # arg via regex is only set when the text was fully quoted. For
         # missing-quote / non-ASCII / multiline content, grab everything after
