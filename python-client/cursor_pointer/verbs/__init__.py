@@ -13,7 +13,12 @@ from .base import Verb, VerbContext, make_placeholder_intent
 # Verbs are added here one at a time as the migration progresses.
 # Order matters: longer-prefix / more-specific verbs go FIRST so the
 # first-match-wins dispatch can't be tricked by a shorter prefix.
-REGISTRY: tuple[Verb, ...] = ()
+from .done import DONE_VERB, WAIT_VERB
+
+REGISTRY: tuple[Verb, ...] = (
+    DONE_VERB,
+    WAIT_VERB,
+)
 
 
 def dispatch(action_str: str, ctx: VerbContext) -> Outcome:

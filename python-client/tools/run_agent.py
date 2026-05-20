@@ -1065,11 +1065,6 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     verb = m["verb"].lower()
     arg = m["arg"]
 
-    if verb == "done":
-        return "DONE"
-    if verb == "wait":
-        time.sleep(float(arg) if arg and arg.isdigit() else 1.5)
-        return None
     if verb == "scroll":
         # `scroll down` / `scroll up` / `scroll <N>` (positive = down).
         # Default step = 6 wheel ticks ≈ half a viewport.
