@@ -8,7 +8,11 @@ from __future__ import annotations
 import io
 from typing import Optional
 
+import math
+
 from PIL import Image
+
+from cursor_pointer.intent import TargetSig
 
 
 # ---------------------------------------------------------------------------
@@ -87,3 +91,59 @@ def is_permission_denied_frame(png_bytes: bytes) -> bool:
     var = sum((p - mean) ** 2 for p in pixels) / n
     stddev = var ** 0.5
     return mean < 2.0 and stddev < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Multi-anchor target match
+# ---------------------------------------------------------------------------
+#
+# Given the signature captured at perception time and the freshly-detected
+# element list captured at action time, return the element that best matches
+# along with the pixel drift (euclidean distance between old and new center).
+#
+# Match priority within the drift radius:
+#   1. role + ocr_text exact equal
+#   2. role exact equal AND ocr_text substring of label
+#   3. ocr_text exact equal alone
+#   4. ax_path equal (if both sides have one)
+#   5. closest geometric center
+
+
+def find_target_match(
+    sig: TargetSig,
+    elements: list[dict],
+    drift_radius_px: int = 50,
+) -> tuple[Optional[dict], Optional[int]]:
+    sx = sig.bbox[0] + sig.bbox[2] // 2
+    sy = sig.bbox[1] + sig.bbox[3] // 2
+
+    candidates: list[tuple[int, int, dict]] = []
+
+    for el in elements:
+        ex = el["x"] + el["w"] // 2
+        ey = el["y"] + el["h"] // 2
+        drift = int(math.hypot(ex - sx, ey - sy))
+        if drift > drift_radius_px:
+            continue
+
+        priority = 99
+        if sig.role and sig.ocr_text and \
+                el.get("role") == sig.role and el.get("label") == sig.ocr_text:
+            priority = 1
+        elif sig.role and el.get("role") == sig.role and sig.ocr_text and \
+                sig.ocr_text in (el.get("label") or ""):
+            priority = 2
+        elif sig.ocr_text and el.get("label") == sig.ocr_text:
+            priority = 3
+        elif sig.ax_path and tuple(el.get("ax_path") or ()) == sig.ax_path:
+            priority = 4
+        else:
+            priority = 5
+        candidates.append((priority, drift, el))
+
+    if not candidates:
+        return None, None
+
+    candidates.sort(key=lambda t: (t[0], t[1]))
+    _, drift, el = candidates[0]
+    return el, drift

@@ -75,3 +75,83 @@ def test_permission_denied_normal_frame():
 
 def test_permission_denied_zero_size():
     assert is_permission_denied_frame(b"") is True
+
+
+# ---------------------------------------------------------------------------
+# Multi-anchor target matching
+# ---------------------------------------------------------------------------
+
+from cursor_pointer.anchors import find_target_match
+from cursor_pointer.intent import TargetSig
+
+
+def _elem(eid: int, x: int, y: int, w: int = 80, h: int = 30,
+          role: str = "AXButton", label: str = "Send") -> dict:
+    return {
+        "id": eid,
+        "x": x, "y": y, "w": w, "h": h,
+        "role": role,
+        "label": label,
+        "ax_ref": object(),
+    }
+
+
+def _sig(x: int, y: int, w: int = 80, h: int = 30,
+         role: str = "AXButton", label: str = "Send",
+         visual_hash: str = "0" * 16) -> TargetSig:
+    return TargetSig(
+        element_id=5,
+        bbox=(x, y, w, h),
+        ax_path=None,
+        role=role,
+        ocr_text=label,
+        visual_hash=visual_hash,
+    )
+
+
+def test_find_target_match_exact_role_and_label():
+    elements = [
+        _elem(1, 0, 0, label="Cancel"),
+        _elem(5, 100, 200),
+        _elem(7, 300, 400, label="Other"),
+    ]
+    sig = _sig(100, 200)
+    hit, drift = find_target_match(sig, elements, drift_radius_px=50)
+    assert hit is not None
+    assert hit["id"] == 5
+    assert drift == 0
+
+
+def test_find_target_match_drift_within_radius():
+    elements = [_elem(5, 130, 230)]  # 30/30 → ~42px drift
+    sig = _sig(100, 200)
+    hit, drift = find_target_match(sig, elements, drift_radius_px=50)
+    assert hit is not None
+    assert hit["id"] == 5
+    assert 30 <= drift <= 50
+
+
+def test_find_target_match_drift_beyond_radius():
+    elements = [_elem(5, 500, 500)]
+    sig = _sig(100, 200)
+    hit, drift = find_target_match(sig, elements, drift_radius_px=50)
+    assert hit is None
+    assert drift is None
+
+
+def test_find_target_match_label_disambiguates_collision():
+    elements = [
+        _elem(1, 110, 210, label="WrongOne"),
+        _elem(5, 120, 220, label="Send"),
+    ]
+    sig = _sig(100, 200, label="Send")
+    hit, drift = find_target_match(sig, elements, drift_radius_px=50)
+    assert hit is not None
+    assert hit["id"] == 5
+
+
+def test_find_target_match_no_role_no_label_fallback_to_bbox():
+    elements = [_elem(5, 105, 205, role="?", label="?")]
+    sig = _sig(100, 200, role=None, label=None)
+    hit, _ = find_target_match(sig, elements, drift_radius_px=50)
+    assert hit is not None
