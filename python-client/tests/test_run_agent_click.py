@@ -9,7 +9,8 @@ def test_click_delegates_to_executor_and_records_outcome():
 
     fake_outcome = MagicMock(status="ok", used_path="ax_press",
                               relocate_drift_px=0, error=None,
-                              elapsed_ms=10)
+                              elapsed_ms=10,
+                              intent=MagicMock(raw_action="click 5"))
     fake_executor = MagicMock()
     fake_executor.execute.return_value = fake_outcome
 
@@ -33,7 +34,8 @@ def test_click_returns_error_string_on_mismatch_target():
     fake_outcome = MagicMock(status="mismatch_target", used_path="none",
                               relocate_drift_px=None,
                               error="target not found",
-                              elapsed_ms=5)
+                              elapsed_ms=5,
+                              intent=MagicMock(raw_action="click 5"))
     fake_executor = MagicMock()
     fake_executor.execute.return_value = fake_outcome
 

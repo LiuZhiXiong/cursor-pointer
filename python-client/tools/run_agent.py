@@ -1065,44 +1065,6 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     verb = m["verb"].lower()
     arg = m["arg"]
 
-    if verb in ("click", "dclick", "rclick"):
-        try:
-            eid = int(arg)
-        except (TypeError, ValueError):
-            return f"click needs element id, got {arg!r}"
-
-        # dclick / rclick keep the legacy hover-then-click path — AXPress is
-        # a single-action verb and ROI-delta verify isn't meaningful for them.
-        # Closed-loop coverage of multi-click verbs is a follow-up.
-        if verb != "click":
-            el = next((b for b in boxes if b["id"] == eid), None)
-            if not el:
-                return f"no element with id {eid}"
-            cx = el["x"] + el["w"] // 2
-            cy = el["y"] + el["h"] // 2
-            if verb == "dclick":
-                hover_then_click(cp, cx, cy, count=2)
-            else:
-                hover_then_click(cp, cx, cy, button="right")
-            return None
-
-        # Single-click → closed-loop executor path.
-        shot = _current_screenshot()
-        intent = _build_click_intent(action_str, eid, boxes, shot)
-        if intent is None:
-            return f"no element with id {eid}"
-        outcome = _get_executor().execute(intent)
-        _log(f"  → click outcome: status={outcome.status} "
-             f"used_path={outcome.used_path} "
-             f"drift={outcome.relocate_drift_px} "
-             f"ms={outcome.elapsed_ms}")
-
-        if outcome.status == "ok":
-            return None
-        if outcome.status == "executed_unverified":
-            history.append(f"click #{eid} executed (unverified)")
-            return None
-        return f"{outcome.status}: {outcome.error or 'no detail'}"
     return f"unknown verb {verb!r}"
 
 

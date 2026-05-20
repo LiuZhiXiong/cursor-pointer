@@ -19,6 +19,7 @@ from .mouse import DRAG_VERB
 from .system import APP_VERB, CLIPBOARD_VERB, SHELL_VERB
 from .browser import BROWSER_VERB
 from .keyboard import KEY_VERB, TYPE_VERB
+from .click import CLICK_VERB, DCLICK_VERB, RCLICK_VERB
 
 REGISTRY: tuple[Verb, ...] = (
     DONE_VERB,
@@ -32,6 +33,9 @@ REGISTRY: tuple[Verb, ...] = (
     BROWSER_VERB,
     TYPE_VERB,
     KEY_VERB,
+    DCLICK_VERB,
+    RCLICK_VERB,
+    CLICK_VERB,
 )
 
 
