@@ -8,7 +8,8 @@ def test_type_no_target_delegates_to_executor():
     import run_agent
     fake_outcome = MagicMock(status="ok", used_path="none",
                               relocate_drift_px=None, error=None,
-                              elapsed_ms=10)
+                              elapsed_ms=10,
+                              intent=MagicMock(raw_action='type "hello"'))
     fake_executor = MagicMock()
     fake_executor.execute.return_value = fake_outcome
 
@@ -28,7 +29,8 @@ def test_type_verify_failed_returns_structured_error():
     fake_outcome = MagicMock(status="verify_failed", used_path="none",
                               relocate_drift_px=None,
                               error="value not present",
-                              elapsed_ms=5)
+                              elapsed_ms=5,
+                              intent=MagicMock(raw_action='type "hello"'))
     fake_executor = MagicMock()
     fake_executor.execute.return_value = fake_outcome
 

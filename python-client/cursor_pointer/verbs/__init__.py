@@ -18,6 +18,7 @@ from .scroll import SCROLL_TO_VERB, SCROLL_VERB
 from .mouse import DRAG_VERB
 from .system import APP_VERB, CLIPBOARD_VERB, SHELL_VERB
 from .browser import BROWSER_VERB
+from .keyboard import KEY_VERB, TYPE_VERB
 
 REGISTRY: tuple[Verb, ...] = (
     DONE_VERB,
@@ -29,6 +30,8 @@ REGISTRY: tuple[Verb, ...] = (
     CLIPBOARD_VERB,
     SHELL_VERB,
     BROWSER_VERB,
+    TYPE_VERB,
+    KEY_VERB,
 )
 
 
