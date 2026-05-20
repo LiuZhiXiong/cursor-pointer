@@ -195,6 +195,26 @@ def _wrap_legacy_return(result, action_str: str) -> _Outcome:
     return _Outcome(status="exec_error", intent=placeholder, error=result)
 
 
+def _legacy_return_from_outcome(outcome: _Outcome) -> Optional[str]:
+    """Reverse of _wrap_legacy_return — converts an Outcome back into the
+    None | str | 'DONE' shape the planner-side main loop expects.
+
+    Preserves exact string prefixes the planner pattern-matches on
+    (e.g. ``mismatch_target:``).
+    """
+    if outcome.status in ("ok", "executed_unverified"):
+        if outcome.intent.raw_action.lower().startswith("done"):
+            return "DONE"
+        return None
+    if outcome.status == "mismatch_target":
+        return f"mismatch_target: {outcome.error or 'target moved'}"
+    if outcome.status == "verify_failed":
+        return f"verify_failed: {outcome.error or 'no detail'}"
+    if outcome.status == "exec_error":
+        return outcome.error or "exec_error"
+    return outcome.error or f"unknown status: {outcome.status}"
+
+
 def preflight() -> Optional[str]:
     """Verify everything we need before the loop starts. Returns None on
     success, or a human-readable error string."""
@@ -1018,6 +1038,25 @@ def _parse_drag(action_str: str) -> tuple[int | None, int | None]:
 
 def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     """Parse and run one action. Return None on success, error msg on failure."""
+    # New-style: try the verb registry first. Verbs already migrated will
+    # route through dispatch() and short-circuit here. Un-migrated verbs
+    # fall through to the legacy if-elif chain below until Task 11.
+    from cursor_pointer.verbs import dispatch as _dispatch, VerbContext as _VerbContext
+    _ctx = _VerbContext(
+        cp=CursorPointer(),
+        boxes=boxes,
+        executor=_get_executor(),
+        history=history,
+        log=_log,
+    )
+    _outcome = _dispatch(action_str, _ctx)
+    _is_unknown = (
+        _outcome.status == "exec_error"
+        and "unknown action" in (_outcome.error or "")
+    )
+    if not _is_unknown:
+        return _legacy_return_from_outcome(_outcome)
+
     cp = CursorPointer()
 
     m = ACTION_RE.search(action_str)

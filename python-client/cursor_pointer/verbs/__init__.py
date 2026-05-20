@@ -1,0 +1,35 @@
+"""Verb registry — declarative dispatch.
+
+REGISTRY is the source of truth for which verbs the agent understands.
+dispatch(action_str, ctx) iterates it; first non-None parse() wins.
+build_grammar_section() renders the verb-list block for SYSTEM_PROMPT.
+"""
+from __future__ import annotations
+
+from ..intent import Outcome
+from .base import Verb, VerbContext, make_placeholder_intent
+
+
+# Verbs are added here one at a time as the migration progresses.
+# Order matters: longer-prefix / more-specific verbs go FIRST so the
+# first-match-wins dispatch can't be tricked by a shorter prefix.
+REGISTRY: tuple[Verb, ...] = ()
+
+
+def dispatch(action_str: str, ctx: VerbContext) -> Outcome:
+    for verb in REGISTRY:
+        args = verb.parse(action_str)
+        if args is not None:
+            return verb.handle(args, ctx)
+    return Outcome(
+        status="exec_error",
+        intent=make_placeholder_intent(action_str),
+        error=f"unknown action: {action_str!r}",
+    )
+
+
+def build_grammar_section() -> str:
+    """Render the verb-grammar block for SYSTEM_PROMPT. One line per verb."""
+    return "\n".join(
+        f"    {v.grammar_hint}" for v in REGISTRY if v.grammar_hint
+    )
