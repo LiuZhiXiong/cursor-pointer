@@ -1247,8 +1247,23 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
                 text = rest.strip('"\'').strip()
         if not text:
             return "type without text"
-        cp.type_text(text)
-        return None
+
+        # Closed-loop executor path. Current type grammar has no element id;
+        # always target=None (verify falls back to AXValue suffix check).
+        shot = _current_screenshot()
+        intent = _build_type_intent(
+            action_str=action_str, text=text, element_id=None,
+            elements=boxes, screenshot_png=shot,
+        )
+        outcome = _get_executor().execute(intent)
+        _log(f"  → type outcome: status={outcome.status} ms={outcome.elapsed_ms}")
+
+        if outcome.status == "ok":
+            return None
+        if outcome.status == "executed_unverified":
+            history.append(f"type {text[:20]!r} executed (unverified)")
+            return None
+        return f"{outcome.status}: {outcome.error or 'no detail'}"
     if verb == "key":
         key = arg.strip('"') if arg else "enter"
         # support "cmd+a" style
