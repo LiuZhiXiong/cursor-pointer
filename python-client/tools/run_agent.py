@@ -1555,6 +1555,21 @@ def main() -> int:
             last_action = action
             time.sleep(1.0)
             continue
+
+        # 4b. Structured-Outcome reactions (closed-loop action contract).
+        outcome = _wrap_legacy_return(result, action_str=action)
+        if outcome.status == "exec_error" and outcome.error and \
+                "permission_denied" in outcome.error:
+            _log(f"!! permission denied — halting loop: {outcome.error}")
+            return 2
+        if isinstance(result, str) and result.startswith("mismatch_target:"):
+            # World moved between perception and action; this is not a planner
+            # failure — force re-perception by skipping the fail-counter bump.
+            _log(f"  ⚠ {result} — re-perception next step, no failure counted")
+            history.append(f"step {step}: [{subgoal}] mismatch_target {action}")
+            current_subgoal = subgoal
+            last_action = action
+            continue
         if result == "DONE":
             if os.environ.get("CURSOR_POINTER_VERIFY", "1") == "0":
                 _log(f"\n✓ done: {action}  (verifier disabled)  "
