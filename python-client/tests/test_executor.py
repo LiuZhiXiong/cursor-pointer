@@ -255,6 +255,59 @@ def test_executor_type_with_target_focuses_then_types():
     cp.type_text.assert_called_once_with("hello")
 
 
+from cursor_pointer.executor import build_click_intent, build_type_intent
+
+
+def test_build_click_intent_from_element_list():
+    elements = [
+        _elem(eid=5, x=100, y=200, role="AXButton", label="Send",
+              ax_ref="REF"),
+    ]
+    shot = _png()
+    intent = build_click_intent(
+        action_str="click 5", element_id=5,
+        elements=elements, screenshot_png=shot,
+    )
+    assert intent is not None
+    assert intent.kind == "click"
+    assert intent.target is not None
+    assert intent.target.element_id == 5
+    assert intent.target.role == "AXButton"
+    assert intent.target.ocr_text == "Send"
+    assert len(intent.target.visual_hash) == 16
+
+
+def test_build_click_intent_returns_none_when_id_missing():
+    elements = [_elem(eid=7)]
+    intent = build_click_intent(
+        action_str="click 5", element_id=5,
+        elements=elements, screenshot_png=_png(),
+    )
+    assert intent is None
+
+
+def test_build_type_intent_with_target():
+    elements = [_elem(eid=3, role="AXTextField", label="Search")]
+    intent = build_type_intent(
+        action_str='type 3 "hello"', text="hello",
+        element_id=3, elements=elements, screenshot_png=_png(),
+    )
+    assert intent.kind == "type"
+    assert intent.payload["text"] == "hello"
+    assert intent.target is not None
+    assert intent.target.role == "AXTextField"
+
+
+def test_build_type_intent_without_target():
+    intent = build_type_intent(
+        action_str='type "hello"', text="hello",
+        element_id=None, elements=[], screenshot_png=_png(),
+    )
+    assert intent.kind == "type"
+    assert intent.target is None
+    assert intent.payload["text"] == "hello"
+
+
 def test_executor_permission_denied_surfaces_via_verify():
     """Black-frame after action → exec_error permission_denied."""
     normal = _png()

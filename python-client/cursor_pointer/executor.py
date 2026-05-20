@@ -250,6 +250,78 @@ class ActionExecutor:
         )
 
 
+# ---------------------------------------------------------------------------
+# IntentBuilder helpers
+# ---------------------------------------------------------------------------
+#
+# Translate the raw VLM-emitted action string + current element list +
+# current screenshot into a structured Intent. Pure functions — no I/O.
+
+
+def build_click_intent(
+    action_str: str,
+    element_id: int,
+    elements: list[dict],
+    screenshot_png: bytes,
+) -> Optional[Intent]:
+    from . import anchors
+
+    el = next((b for b in elements if b.get("id") == element_id), None)
+    if el is None:
+        return None
+    bbox = (int(el["x"]), int(el["y"]), int(el["w"]), int(el["h"]))
+    target = TargetSig(
+        element_id=element_id,
+        bbox=bbox,
+        ax_path=None,
+        role=el.get("role"),
+        ocr_text=el.get("label"),
+        visual_hash=anchors.average_hash_hex(screenshot_png, bbox=bbox),
+    )
+    return Intent(
+        kind="click",
+        target=target,
+        payload={},
+        expect=ExpectSig(focus_changes=True, roi_pixel_delta_min=0.02),
+        raw_action=action_str,
+    )
+
+
+def build_type_intent(
+    action_str: str,
+    text: str,
+    element_id: Optional[int],
+    elements: list[dict],
+    screenshot_png: bytes,
+) -> Intent:
+    from . import anchors
+
+    target = None
+    if element_id is not None:
+        el = next((b for b in elements if b.get("id") == element_id), None)
+        if el is not None:
+            bbox = (int(el["x"]), int(el["y"]), int(el["w"]), int(el["h"]))
+            target = TargetSig(
+                element_id=element_id,
+                bbox=bbox,
+                ax_path=None,
+                role=el.get("role"),
+                ocr_text=el.get("label"),
+                visual_hash=anchors.average_hash_hex(screenshot_png, bbox=bbox),
+            )
+    return Intent(
+        kind="type",
+        target=target,
+        payload={"text": text},
+        expect=ExpectSig(
+            focus_changes=False,
+            roi_pixel_delta_min=0.0,
+            typed_text_in_focus=text,
+        ),
+        raw_action=action_str,
+    )
+
+
 def _focus_signature(focus_obj) -> str:
     """Reduce a focused-AX dict to a stable equality key."""
     if focus_obj is None:
