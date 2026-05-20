@@ -1065,22 +1065,6 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
     verb = m["verb"].lower()
     arg = m["arg"]
 
-    if verb == "drag":
-        f, t = _parse_drag(action_str)
-        if f is None:
-            return f"drag needs 'from to' ids, got {action_str!r}"
-        el_from = next((b for b in boxes if b["id"] == f), None)
-        el_to = next((b for b in boxes if b["id"] == t), None)
-        if not el_from or not el_to:
-            return f"drag: bad id(s) {f}/{t}"
-        fx = el_from["x"] + el_from["w"] // 2
-        fy = el_from["y"] + el_from["h"] // 2
-        tx = el_to["x"] + el_to["w"] // 2
-        ty = el_to["y"] + el_to["h"] // 2
-        cp.move(fx, fy)
-        time.sleep(0.2)
-        cp.drag(from_xy=(fx, fy), to_xy=(tx, ty))
-        return None
     if verb == "app":
         name = ""
         if arg:
