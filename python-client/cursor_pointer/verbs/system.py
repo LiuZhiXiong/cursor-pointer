@@ -2,11 +2,21 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from typing import Optional
 
 from ..intent import Outcome
 from .base import Verb, VerbContext, make_placeholder_intent
+
+
+# Whitelist of safe read-only commands. Mirrors the SHELL_WHITELIST that
+# lived in run_agent.py before migration.
+SHELL_WHITELIST = frozenset({
+    "ls", "cat", "echo", "pwd", "which",
+    "head", "tail", "grep", "find", "file",
+    "wc", "date", "hostname", "whoami",
+})
 
 
 # ---------- app ----------
@@ -153,4 +163,60 @@ CLIPBOARD_VERB = Verb(
     parse=_parse_clipboard,
     handle=_handle_clipboard,
     grammar_hint='clipboard read / clipboard write "<text>"  # 剪贴板读写',
+)
+
+
+# ---------- shell ----------
+
+_SHELL_RE = re.compile(r"^\s*shell\s+(.+)$", re.IGNORECASE)
+
+
+def _parse_shell(s: str) -> Optional[dict]:
+    m = _SHELL_RE.match(s)
+    if not m:
+        return None
+    cmd = m.group(1).strip()
+    if not cmd:
+        return None
+    return {"cmd": cmd}
+
+
+def _handle_shell(args: dict, ctx: VerbContext) -> Outcome:
+    raw = f"shell {args['cmd']}"
+    placeholder = make_placeholder_intent(raw)
+    try:
+        argv = shlex.split(args["cmd"])
+    except ValueError as e:
+        return Outcome(status="exec_error", intent=placeholder,
+                       error=f"shell could not parse {args['cmd']!r}: {e}")
+    if not argv:
+        return Outcome(status="exec_error", intent=placeholder,
+                       error="shell needs a command")
+    head = argv[0]
+    if head not in SHELL_WHITELIST:
+        return Outcome(
+            status="exec_error", intent=placeholder,
+            error=(f"shell command {head!r} not in whitelist "
+                   f"{sorted(SHELL_WHITELIST)}"),
+        )
+    try:
+        out = subprocess.run(
+            argv, capture_output=True, text=True, timeout=8,
+        )
+    except subprocess.TimeoutExpired:
+        return Outcome(status="exec_error", intent=placeholder,
+                       error=f"shell {head!r} timed out (8s)")
+    except FileNotFoundError:
+        return Outcome(status="exec_error", intent=placeholder,
+                       error=f"shell {head!r} not found on PATH")
+    result_text = (out.stdout or "")[:200].rstrip()
+    ctx.history.append(f"shell {head!r} → {result_text!r}")
+    return Outcome(status="executed_unverified", intent=placeholder, error=None)
+
+
+SHELL_VERB = Verb(
+    name="shell",
+    parse=_parse_shell,
+    handle=_handle_shell,
+    grammar_hint="shell <cmd>          # 仅限只读命令：ls/cat/echo/pwd/head/tail/grep/find/wc/date 等",
 )
