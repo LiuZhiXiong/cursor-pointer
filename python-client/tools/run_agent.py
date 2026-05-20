@@ -27,6 +27,16 @@ from typing import Optional
 
 import requests
 from cursor_pointer import CursorPointer  # noqa: E402
+from cursor_pointer.executor import (  # noqa: E402
+    ActionExecutor as _ActionExecutor,
+    build_click_intent as _build_click_intent,
+    build_type_intent as _build_type_intent,
+)
+from cursor_pointer.intent import (  # noqa: E402
+    ExpectSig as _ExpectSig,
+    Intent as _Intent,
+    Outcome as _Outcome,
+)
 
 # Eager-imported alias so tests can patch `run_agent.trigger_system_screenshot`
 # without having to dig into run_ocr. Production code already does this lazy
@@ -89,6 +99,100 @@ def _retry(fn, *, tries: int = 3, delay: float = 0.6, label: str = "op"):
             if attempt < tries:
                 time.sleep(delay)
     raise last_exc  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Closed-loop action contract glue
+# ---------------------------------------------------------------------------
+#
+# Provides the ActionExecutor with screenshot, focused-AX, and just-in-time
+# element-detection callbacks. The executor lives behind a module-level
+# accessor so tests can monkeypatch it cleanly.
+
+_EXECUTOR_SINGLETON: Optional[_ActionExecutor] = None
+_CURRENT_TARGET_PID: Optional[int] = None
+
+
+def _current_screenshot() -> bytes:
+    """PNG of the primary monitor. Empty bytes on failure so the executor's
+    permission-denied detector triggers cleanly."""
+    try:
+        return CursorPointer().screenshot()
+    except Exception:
+        return b""
+
+
+def _focused_ax_dict() -> Optional[dict]:
+    """Return {role,label,value,id} for the system-wide focused AX element."""
+    try:
+        from ApplicationServices import (  # type: ignore
+            AXUIElementCreateSystemWide,
+            AXUIElementCopyAttributeValue,
+        )
+        sysw = AXUIElementCreateSystemWide()
+        err, focused = AXUIElementCopyAttributeValue(
+            sysw, "AXFocusedUIElement", None
+        )
+        if err != 0 or focused is None:
+            return None
+        out: dict = {}
+        for key in ("AXRole", "AXTitle", "AXValue"):
+            try:
+                e, v = AXUIElementCopyAttributeValue(focused, key, None)
+                if e == 0:
+                    out[key] = v
+            except Exception:
+                pass
+        return {
+            "role": out.get("AXRole"),
+            "label": out.get("AXTitle"),
+            "value": out.get("AXValue"),
+            "id": f"{out.get('AXRole')}|{out.get('AXTitle')}|{id(focused)}",
+        }
+    except Exception:
+        return None
+
+
+def _set_target_pid_for_executor(pid: Optional[int]) -> None:
+    global _CURRENT_TARGET_PID
+    _CURRENT_TARGET_PID = pid
+
+
+def _detect_for_executor() -> list[dict]:
+    """Just-in-time element detection for the executor's relocate step."""
+    if _CURRENT_TARGET_PID is None:
+        return []
+    try:
+        return detect_elements(_CURRENT_TARGET_PID)
+    except Exception:
+        return []
+
+
+def _get_executor() -> _ActionExecutor:
+    global _EXECUTOR_SINGLETON
+    if _EXECUTOR_SINGLETON is None:
+        _EXECUTOR_SINGLETON = _ActionExecutor(
+            cp=CursorPointer(),
+            screenshot_fn=_current_screenshot,
+            ax_press_fn=ax_press_element,
+            focused_ax_fn=_focused_ax_dict,
+            detect_elements_fn=_detect_for_executor,
+        )
+    return _EXECUTOR_SINGLETON
+
+
+def _wrap_legacy_return(result, action_str: str) -> _Outcome:
+    """Convert the legacy execute() return value (None | str) into the uniform
+    Outcome shape so the planner-side reads one type."""
+    placeholder = _Intent(
+        kind="click", target=None, payload={}, expect=_ExpectSig(),
+        raw_action=action_str,
+    )
+    if result is None:
+        return _Outcome(status="executed_unverified", intent=placeholder)
+    if result == "DONE":
+        return _Outcome(status="ok", intent=placeholder)
+    return _Outcome(status="exec_error", intent=placeholder, error=result)
 
 
 def preflight() -> Optional[str]:
@@ -1159,70 +1263,39 @@ def execute(action_str: str, boxes: list[dict]) -> Optional[str]:
             eid = int(arg)
         except (TypeError, ValueError):
             return f"click needs element id, got {arg!r}"
-        el = next((b for b in boxes if b["id"] == eid), None)
-        if not el:
+
+        # dclick / rclick keep the legacy hover-then-click path — AXPress is
+        # a single-action verb and ROI-delta verify isn't meaningful for them.
+        # Closed-loop coverage of multi-click verbs is a follow-up.
+        if verb != "click":
+            el = next((b for b in boxes if b["id"] == eid), None)
+            if not el:
+                return f"no element with id {eid}"
+            cx = el["x"] + el["w"] // 2
+            cy = el["y"] + el["h"] // 2
+            if verb == "dclick":
+                hover_then_click(cp, cx, cy, count=2)
+            else:
+                hover_then_click(cp, cx, cy, button="right")
+            return None
+
+        # Single-click → closed-loop executor path.
+        shot = _current_screenshot()
+        intent = _build_click_intent(action_str, eid, boxes, shot)
+        if intent is None:
             return f"no element with id {eid}"
+        outcome = _get_executor().execute(intent)
+        _log(f"  → click outcome: status={outcome.status} "
+             f"used_path={outcome.used_path} "
+             f"drift={outcome.relocate_drift_px} "
+             f"ms={outcome.elapsed_ms}")
 
-        # ----- AXPress fast-path (single-click only) -----
-        # Try the accessibility action first — Electron apps often reject
-        # synthetic mouse events but honor AXPress. Move the visible cursor
-        # ring there so the user sees what we're clicking; then AXPress.
-        if verb == "click" and el.get("ax_ref") is not None:
-            cx0 = el["x"] + el["w"] // 2
-            cy0 = el["y"] + el["h"] // 2
-            cp.move(cx0, cy0)
-            time.sleep(0.1)
-            if ax_press_element(el["ax_ref"]):
-                _log(f"  → AXPress '{el.get('label','')}' (#{eid})")
-                return None
-            # else fall through to mouse click
-
-        cx, cy = el["x"] + el["w"] // 2, el["y"] + el["h"] // 2
-        # ----- Icon-row reach-around -----
-        # Narrow AXStaticText labels (e.g. sidebar nav like "漫游" — 28x20)
-        # sit in a hit-zone where the geometric center lands in dead space
-        # between the icon and the text. NeteaseMusic / many Electron sidebars
-        # wire the click handler to the ICON (or the full row), not the text
-        # bbox. If there's an AXImage sibling within 50px on the same row,
-        # shift the click point to span both — i.e. the icon center.
-        if el.get("role") in ("AXStaticText", "StaticText") and el["w"] < 80:
-            sibling_icon = None
-            best_dx = 1e9
-            for b in boxes:
-                if b is el:
-                    continue
-                if b.get("role") not in ("AXImage", "Image", "AXButton", "Button"):
-                    continue
-                # same horizontal band — center y within 10px
-                if abs((b["y"] + b["h"] // 2) - cy) > 10:
-                    continue
-                # to the LEFT of the text, within 50px gap
-                gap = el["x"] - (b["x"] + b["w"])
-                if -4 <= gap <= 50 and gap < best_dx:
-                    best_dx = gap
-                    sibling_icon = b
-            if sibling_icon is not None:
-                # click the icon center — that's the real hit zone
-                cx = sibling_icon["x"] + sibling_icon["w"] // 2
-                cy = sibling_icon["y"] + sibling_icon["h"] // 2
-                _log(f"  → icon-row reach-around: targeting icon "
-                     f"'{sibling_icon.get('label','')}' at ({cx},{cy})")
-                # AXPress on the icon first — Electron sidebars (Netease,
-                # Slack, …) ignore synthetic mouse clicks but honor AXPress.
-                if verb == "click" and sibling_icon.get("ax_ref") is not None:
-                    cp.move(cx, cy)
-                    time.sleep(0.1)
-                    if ax_press_element(sibling_icon["ax_ref"]):
-                        _log(f"    → AXPress on sibling icon succeeded")
-                        return None
-        # Always hover-before-click — triggers hover states on Electron/web apps
-        if verb == "click":
-            hover_then_click(cp, cx, cy)
-        elif verb == "dclick":
-            hover_then_click(cp, cx, cy, count=2)
-        else:
-            hover_then_click(cp, cx, cy, button="right")
-        return None
+        if outcome.status == "ok":
+            return None
+        if outcome.status == "executed_unverified":
+            history.append(f"click #{eid} executed (unverified)")
+            return None
+        return f"{outcome.status}: {outcome.error or 'no detail'}"
     return f"unknown verb {verb!r}"
 
 
