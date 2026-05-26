@@ -24,6 +24,23 @@ png = cp.screenshot()          # PNG bytes
 
 See `examples/ocr_click.py` for a full OCR-driven click demo.
 
+## Runnable examples
+
+Every script below has a `--dry-run` flag so you can read the plan without
+moving the cursor. Each opens and closes its own helper app — no artifacts.
+
+- `examples/permission_check.py` — diagnostic precheck for Accessibility +
+  Screen Recording. Run this first on a new machine.
+- `examples/closed_loop_click.py` — the "money shot": detect TextEdit's File
+  menu via AX, click via `ActionExecutor`, print the structured `Outcome`
+  (status / used_path / drift / elapsed_ms).
+- `examples/drift_recovery.py` — same flow, but artificially shifts the
+  window between detect and click to demonstrate drift recovery vs the
+  `mismatch_target` outcome.
+- `examples/ocr_click.py` — OCR-driven click for any visible text.
+- `examples/agent_loop.py` — generic perceive→decide→act driver you can
+  wire to any VLM.
+
 ## Set-of-Mark agent layer
 
 When you want an LLM to drive cursor-pointer, use the `Session` + annotate
