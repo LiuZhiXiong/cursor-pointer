@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cursor-pointer — The bridge that lets your AI agent actually use your Mac.</title>
+  <meta name="description" content="Computer-use SDKs treat the desktop as a black box. When your agent&#x27;s click silently fails — wrong pixel, stale modal, Electron app ignoring the synthetic event">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="hero">
+  <div class="container">
+    <p class="eyebrow">cursor-pointer</p>
+    <h1>The bridge that lets your AI agent actually use your Mac.</h1>
+    <p class="lede">Computer-use SDKs treat the desktop as a black box. When your agent&#x27;s click silently fails — wrong pixel, stale modal, Electron app ignoring the synthetic event — you spend hours debugging. cursor-pointer gives every action a <strong>structured outcome</strong> so the agent (and you) know whether it actually worked.</p>
+    <ul class="hero-bullets">
+  <li><strong>Closed-loop click verification</strong> — each click reports <code>ok</code> / <code>mismatch_target</code> / <code>verify_failed</code> / <code>exec_error</code>, with the path it took (<code>ax_press</code> or <code>pixel</code>) and pixel drift between perception and action.</li>
+  <li><strong>AXPress on Electron apps</strong> that ignore synthetic mouse events (Slack, Discord, NeteaseMusic, …).</li>
+  <li><strong>Permission revocation surfaces immediately</strong> instead of looping on black screenshots.</li>
+  <li><strong>Declarative verb registry</strong> — adding a new action is one file.</li>
+  <li>173 tests, MIT-licensed, free to try.</li>
+    </ul>
+    <p class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/LiuZhiXiong/cursor-pointer/issues/new?title=Notify+me+when+the+signed+dmg+is+available">Notify me about the $49 signed .dmg</a>
+      <a class="btn btn-ghost" href="https://github.com/LiuZhiXiong/cursor-pointer">View on GitHub</a>
+    </p>
+  </div>
+</header>
+
+<main>
+  <section class="section" id="demo">
+    <div class="container">
+      <h2>See it work</h2>
+      <p class="muted">90 seconds. The agent opens TextEdit, types, and verifies every step.</p>
+      <div class="video-placeholder"><p><strong>90-second demo video</strong></p><p class="muted">TODO: paste the YouTube embed URL into <code>VIDEO_EMBED_URL</code> in <code>scripts/build_landing.py</code> once the recording is published.</p></div>
+    </div>
+  </section>
+
+  <section class="section section-alt" id="features">
+    <div class="container">
+      <h2>What&rsquo;s new in v0.2.0</h2>
+      <div class="cards">
+  <article class="card">
+    <h3>Closed-loop action contract</h3>
+    <p>Every <code>click</code> and <code>type</code> now reports one of:</p>
+<ul><li><code>ok</code> — verified change on screen after the action</li><li><code>mismatch_target</code> — the element under the cursor at action time didn&#x27;t match what your agent perceived (stale modal, UI shifted)</li><li><code>verify_failed</code> — the action executed but the expected change didn&#x27;t happen</li><li><code>exec_error</code> — the OS rejected the action (permission, dead window, etc.)</li><li><code>permission_denied</code> — Accessibility or Screen Recording revoked; the loop halts cleanly with exit code 2 instead of looping on black frames</li></ul>
+<p>Each outcome also carries the <strong>path taken</strong> (<code>ax_press</code> or <code>pixel</code>) and <strong>pixel drift</strong> between perception and action. If a button responds to accessibility actions, cursor-pointer uses that path — which is the only reliable way to click many Electron apps (Slack, Discord, NeteaseMusic) that ignore synthetic mouse events.</p>
+  </article>
+  <article class="card">
+    <h3>Declarative verb registry</h3>
+    <p>Adding a new action used to mean editing the dispatcher, the prompt grammar, and the tests in three places. Now each verb is one file in <code>python-client/cursor_pointer/verbs/</code>. The agent&#x27;s prompt grammar is auto-generated from the registry, so you can&#x27;t ship a verb the agent doesn&#x27;t know how to call (or vice versa).</p>
+<p>Ships with: <code>click</code>, <code>dclick</code>, <code>rclick</code>, <code>type</code>, <code>key</code>, <code>drag</code>, <code>scroll</code>, <code>scroll_to</code>, <code>app</code>, <code>clipboard</code>, <code>shell</code>, <code>browser</code>, <code>wait</code>, <code>done</code>.</p>
+  </article>
+  <article class="card">
+    <h3>Per-step structured log</h3>
+    <p><code>tools/run_agent.py</code> now prints one line per step:</p>
+<pre><code>[STEP 3] click 5  → status=ok path=ax_press drift=0px (12ms)
+[STEP 4] click 7  → status=mismatch_target path=none — target signature did not match</code></pre>
+<p>Glanceable during a run, greppable after.</p>
+  </article>
+  <article class="card">
+    <h3><code>scripts/demo_recorder.py</code></h3>
+    <p>Wraps the agent and tees the per-step banner as a JSONL event stream — useful for OBS overlays, post-run analysis, or piping into your own dashboard. The agent itself is unchanged; the recorder parses existing stdout.</p>
+<pre><code>python scripts/demo_recorder.py --jsonl /tmp/run.jsonl &quot;open TextEdit and type hello&quot;</code></pre>
+  </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="example">
+    <div class="container">
+      <h2>30-second example</h2>
+      <p class="muted">The closed-loop click &mdash; straight from the README.</p>
+      <details>
+        <summary>Show the Python code</summary>
+        <pre class="code-py"><code><span class="k">from</span> cursor_pointer <span class="k">import</span> CursorPointer
+<span class="k">from</span> cursor_pointer.executor <span class="k">import</span> ActionExecutor, build_click_intent
+
+cp = <span class="fn">CursorPointer</span>()
+ex = <span class="fn">ActionExecutor</span>(cp=cp, screenshot_fn=<span class="k">lambda</span>: cp.<span class="fn">screenshot</span>(),
+                    ax_press_fn=..., focused_ax_fn=...)
+
+intent = <span class="fn">build_click_intent</span>(<span class="s">&quot;click 5&quot;</span>, element_id=<span class="n">5</span>,
+                            elements=<span class="fn">detect</span>(), screenshot_png=cp.<span class="fn">screenshot</span>())
+outcome = ex.<span class="fn">execute</span>(intent)
+
+<span class="fn">print</span>(outcome.status, outcome.used_path)
+<span class="c"># → ok ax_press         (button responded to accessibility action)</span>
+<span class="c"># → verify_failed pixel (click executed but nothing on screen changed)</span>
+<span class="c"># → mismatch_target none (button moved between detect and act)</span></code></pre>
+      </details>
+    </div>
+  </section>
+
+  <section class="section section-alt" id="get-started">
+    <div class="container">
+      <h2>Get it</h2>
+      <p>Two paths today, and a third on the way:</p>
+      <div class="cards">
+        <article class="card">
+          <h3>Build from source</h3>
+          <p>macOS 12+, Rust, Node 18, Python 3.10. 10&ndash;15 minutes cold.</p>
+          <pre><code>git clone https://github.com/LiuZhiXiong/cursor-pointer.git
+cd cursor-pointer
+npm install &amp;&amp; npm run dev</code></pre>
+        </article>
+        <article class="card">
+          <h3>Signed <code>.dmg</code> &mdash; $49</h3>
+          <p>Skip the toolchain. Drag-to-Applications, signed, notarized.</p>
+          <p><a class="btn btn-primary" href="https://github.com/LiuZhiXiong/cursor-pointer/issues/new?title=Notify+me+when+the+signed+dmg+is+available">Get notified when it ships</a></p>
+        </article>
+        <article class="card">
+          <h3>Read the source</h3>
+          <p>MIT-licensed. 173 tests. Single author. macOS only.</p>
+          <p><a class="btn btn-ghost" href="https://github.com/LiuZhiXiong/cursor-pointer">github.com/LiuZhiXiong/cursor-pointer</a></p>
+        </article>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="container">
+    <p>MIT-licensed. Built with Tauri, axum, enigo, and xcap. <a href="https://github.com/LiuZhiXiong/cursor-pointer">Source on GitHub</a>.</p>
+  </div>
+</footer>
+</body>
+</html>

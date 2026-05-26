@@ -1,5 +1,23 @@
 # Demo recording runbooks — human-driven scenarios
 
+> 💡 **New: `scripts/qa_demo_smoke.py --scenario [N]` now drives most of
+> this for you.** It runs the pre-flight, prompts you at the exact moment
+> human action is required (focus an Electron button, dismiss a dialog,
+> toggle Screen Recording off), parses the banner stream, and reports
+> PASS/FAIL per scenario. Use the manual runbook below only when the
+> script fails or you want to verify the underlying behavior step-by-step.
+>
+> Quick reference:
+>
+> ```
+> python scripts/qa_demo_smoke.py --scenario 1                          # auto
+> python scripts/qa_demo_smoke.py --scenario 2                          # prompts you
+> python scripts/qa_demo_smoke.py --scenario 3                          # prompts you
+> python scripts/qa_demo_smoke.py --scenario 4 --confirm-permission-test # destructive
+> python scripts/qa_demo_smoke.py --scenario all                        # all four
+> python scripts/qa_demo_smoke.py --dry-run --scenario all              # print plan only
+> ```
+
 These three runbooks cover the 90s-demo scenarios that **cannot be
 fully automated** because they depend on a human's timing or on
 toggling system-level state (Privacy panel, manual dismissal of a
