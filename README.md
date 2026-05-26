@@ -17,7 +17,45 @@ event — you spend hours debugging. cursor-pointer gives every action a
 - **Declarative verb registry** — adding a new action is one file.
 - 173 tests, MIT-licensed, free to try.
 
-## See it work in 30 seconds
+## What you need
+
+| | |
+| --- | --- |
+| **OS** | macOS 12+ (Apple Silicon or Intel) |
+| **Toolchain** | Rust (stable), Node ≥ 18, Python ≥ 3.10, Xcode Command Line Tools |
+| **Permissions** | Accessibility + Screen Recording (granted on first run) |
+| **Disk / time** | ~2 GB for the Rust build cache; 10–15 min cold build |
+
+## Two ways to see it work
+
+### 1. Watch path — 90 seconds, no install
+
+Don't want to build? Watch the closed-loop agent open TextEdit, type, and
+verify every step on a real Mac:
+
+**[Demo video → YouTube](https://youtube.com/TODO-replace-with-real-url)** *(TODO: link once the demo recording is published)*
+
+### 2. Build path — 10–15 minutes to your first verified click
+
+This is a Tauri + Rust app with a Python SDK. Cold build is honest work:
+
+```bash
+git clone https://github.com/LiuZhiXiong/cursor-pointer.git
+cd cursor-pointer
+npm install           # ~1 min
+npm run dev           # first run: 5–10 min Rust compile, then opens the panel
+```
+
+On first launch macOS will prompt for **Accessibility** and **Screen
+Recording** (*System Settings → Privacy & Security*). Grant both, quit, relaunch.
+Default API port is `39213` — override with `CURSOR_POINTER_PORT=...`.
+
+Then install the Python SDK and run a click that reports its own outcome:
+
+```bash
+cd python-client
+pip install -e ".[ocr]"
+```
 
 ```python
 from cursor_pointer import CursorPointer
@@ -39,30 +77,17 @@ print(outcome.status, outcome.used_path)
 
 The agent stops guessing.
 
-## Quick start
+### 3. Skip the build — signed `.dmg`, $49 *(coming soon)*
 
-Prereqs: Rust toolchain, Node ≥ 18, Xcode Command Line Tools.
+If your time is worth more than 15 minutes of `cargo build`, a signed,
+notarized `.dmg` is on the way for **$49 one-time**. Same binary, no Rust
+toolchain, no Gatekeeper warnings, drag-to-Applications and go.
+**[Get notified when it ships →](https://github.com/LiuZhiXiong/cursor-pointer/issues/new?title=Notify+me+when+the+signed+dmg+is+available)** *(TODO: replace with real signup URL when landing page is live)*
 
-```bash
-git clone https://github.com/LiuZhiXiong/cursor-pointer.git
-cd cursor-pointer
-npm install
-npm run dev          # opens the floating control panel
-```
+## More Python SDK examples
 
-First run prompts for **Accessibility** and **Screen Recording** permissions
-(*System Settings → Privacy & Security*). Grant both, restart the app.
-
-Default API port is `39213`. Override with `CURSOR_POINTER_PORT=...`.
-
-## Python SDK
-
-```bash
-cd python-client
-pip install -e ".[ocr]"
-```
-
-Minimal raw usage:
+Raw input (no verification, no agent loop) — useful for scripted automation
+where you already trust the coordinates:
 
 ```python
 from cursor_pointer import CursorPointer
@@ -74,7 +99,7 @@ cp.hotkey("cmd", "a")
 png = cp.screenshot()
 ```
 
-Full closed-loop agent:
+End-to-end closed-loop agent (perception + intent + verify):
 
 ```bash
 python tools/run_agent.py "open TextEdit and type hello"

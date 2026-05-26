@@ -10,3 +10,4 @@ dist/
 .cursor-pointer/
 *.dmg
 *.app
+scripts/.last_build.log
