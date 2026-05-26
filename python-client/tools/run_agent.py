@@ -1258,6 +1258,22 @@ def main() -> int:
 
         # 4b. Structured-Outcome reactions (closed-loop action contract).
         outcome = _wrap_legacy_return(result, action_str=action)
+
+        # One-line readable banner so demos / users see what the agent decided
+        # and how it landed without parsing verb-specific logs.
+        _summary = (
+            f"[STEP {step}] {action!s:<40s} → status={outcome.status}"
+        )
+        if outcome.used_path and outcome.used_path != "none":
+            _summary += f" path={outcome.used_path}"
+        if outcome.relocate_drift_px is not None:
+            _summary += f" drift={outcome.relocate_drift_px}px"
+        if outcome.elapsed_ms:
+            _summary += f" ({outcome.elapsed_ms}ms)"
+        if outcome.error and outcome.status != "ok":
+            _summary += f"  — {outcome.error[:60]}"
+        _log(_summary)
+
         if outcome.status == "exec_error" and outcome.error and \
                 "permission_denied" in outcome.error:
             _log(f"!! permission denied — halting loop: {outcome.error}")
