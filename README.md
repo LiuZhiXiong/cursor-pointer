@@ -1,57 +1,141 @@
-# CursorPointer
+# cursor-pointer
 
-A macOS desktop control surface for AI agents.
+**The bridge that lets your AI agent actually use your Mac.**
 
-A small floating Tauri app runs in the corner of your screen and exposes a
-localhost HTTP API. Python (or anything that speaks HTTP) can call it to move
-the cursor, click, scroll, type, press keys, and grab screenshots. Pair it
-with OCR / a vision model on the Python side and you have a complete
-agentic computer-use loop.
+Computer-use SDKs treat the desktop as a black box. When your agent's click
+silently fails — wrong pixel, stale modal, Electron app ignoring the synthetic
+event — you spend hours debugging. cursor-pointer gives every action a
+**structured outcome** so the agent (and you) know whether it actually worked.
+
+- **Closed-loop click verification** — each click reports `ok` /
+  `mismatch_target` / `verify_failed` / `exec_error`, with the path it took
+  (`ax_press` or `pixel`) and pixel drift between perception and action.
+- **AXPress on Electron apps** that ignore synthetic mouse events
+  (Slack, Discord, NeteaseMusic, …).
+- **Permission revocation surfaces immediately** instead of looping on
+  black screenshots.
+- **Declarative verb registry** — adding a new action is one file.
+- 173 tests, MIT-licensed, free to try.
+
+## See it work in 30 seconds
+
+```python
+from cursor_pointer import CursorPointer
+from cursor_pointer.executor import ActionExecutor, build_click_intent
+
+cp = CursorPointer()
+ex = ActionExecutor(cp=cp, screenshot_fn=lambda: cp.screenshot(),
+                    ax_press_fn=..., focused_ax_fn=...)
+
+intent = build_click_intent("click 5", element_id=5,
+                            elements=detect(), screenshot_png=cp.screenshot())
+outcome = ex.execute(intent)
+
+print(outcome.status, outcome.used_path)
+# → ok ax_press         (button responded to accessibility action)
+# → verify_failed pixel (click executed but nothing on screen changed)
+# → mismatch_target none (button moved between detect and act)
+```
+
+The agent stops guessing.
+
+## Quick start
+
+Prereqs: Rust toolchain, Node ≥ 18, Xcode Command Line Tools.
+
+```bash
+git clone https://github.com/LiuZhiXiong/cursor-pointer.git
+cd cursor-pointer
+npm install
+npm run dev          # opens the floating control panel
+```
+
+First run prompts for **Accessibility** and **Screen Recording** permissions
+(*System Settings → Privacy & Security*). Grant both, restart the app.
+
+Default API port is `39213`. Override with `CURSOR_POINTER_PORT=...`.
+
+## Python SDK
+
+```bash
+cd python-client
+pip install -e ".[ocr]"
+```
+
+Minimal raw usage:
+
+```python
+from cursor_pointer import CursorPointer
+
+cp = CursorPointer()
+cp.click(640, 480)
+cp.type_text("hello")
+cp.hotkey("cmd", "a")
+png = cp.screenshot()
+```
+
+Full closed-loop agent:
+
+```bash
+python tools/run_agent.py "open TextEdit and type hello"
+```
+
+The agent emits a structured outcome per step. See
+[`docs/superpowers/specs/`](docs/superpowers/specs/) for the action contract
+design.
+
+---
+
+## Architecture
 
 ```
 ┌───────────────────────────┐         ┌────────────────────────────┐
 │ Python / AI agent         │         │  CursorPointer.app         │
 │  • OCR / vision           │ HTTP    │  • floating overlay panel  │
-│  • element-tree builder   │ ──────▶ │  • axum API @ :39213       │
-│  • plans actions          │         │  • enigo → CGEvent (input) │
+│  • IntentBuilder          │ ──────▶ │  • axum API @ :39213       │
+│  • ActionExecutor (verify)│         │  • enigo → CGEvent (input) │
 │                           │ ◀────── │  • xcap (screenshot)       │
 └───────────────────────────┘  JSON   └────────────────────────────┘
 ```
 
-## Layout
-
 ```
 cursor-pointer/
 ├── src-tauri/          Rust backend + Tauri shell
-│   ├── src/
-│   │   ├── input.rs    mouse / keyboard / scroll via enigo
-│   │   ├── screen.rs   monitor info + PNG screenshots via xcap
-│   │   ├── api.rs      axum HTTP server
-│   │   ├── lib.rs      Tauri entry + commands
-│   │   └── main.rs
-│   ├── capabilities/   Tauri 2 capability declarations
-│   ├── icons/          placeholder icons (replace with your own)
-│   ├── Cargo.toml
-│   └── tauri.conf.json
+│   └── src/
+│       ├── input.rs    mouse / keyboard / scroll via enigo
+│       ├── screen.rs   monitor info + PNG screenshots via xcap
+│       ├── api.rs      axum HTTP server
+│       └── lib.rs      Tauri entry + commands
 ├── src/                Floating control panel (vanilla HTML/CSS/JS)
-├── python-client/      Python SDK + OCR demo
+├── python-client/      Python SDK + agent + closed-loop executor + verb registry
 └── package.json        Tauri CLI scripts
 ```
 
-## Develop
+## HTTP API (cheat sheet)
 
-Prereqs: Rust toolchain, Node ≥ 18, Xcode Command Line Tools.
+All endpoints accept/return JSON unless noted. Default base URL
+`http://127.0.0.1:39213`.
 
-```bash
-npm install
-npm run dev          # tauri dev — opens the floating control panel
-```
+| Method | Path                     | Body / Query                                                                 | Notes                              |
+| ------ | ------------------------ | ---------------------------------------------------------------------------- | ---------------------------------- |
+| GET    | `/health`                | —                                                                            | `{ok, version, name}`              |
+| POST   | `/mouse/move`            | `{x, y}`                                                                     | Absolute coordinates (logical px)  |
+| POST   | `/mouse/click`           | `{x?, y?, button?: "left"\|"right"\|"middle", count?: 1}`                   | Move-then-click if x,y given       |
+| POST   | `/mouse/down` / `/up`    | `{button?}`                                                                  | Hold / release                     |
+| POST   | `/mouse/scroll`          | `{dx?, dy?, x?, y?}`                                                         | Ticks; +y = down                   |
+| GET    | `/mouse/position`        | —                                                                            | `{x, y}`                           |
+| POST   | `/keyboard/type`         | `{text}`                                                                     | Unicode text input                 |
+| POST   | `/keyboard/key`          | `{key, modifiers?: ["cmd","shift",...]}`                                     | Tap with optional combo            |
+| POST   | `/keyboard/down`/`/up`   | `{key}`                                                                      | Hold / release                     |
+| GET    | `/screen/monitors`       | —                                                                            | List of `{index,x,y,width,height,scale_factor,is_primary,name}` |
+| GET    | `/screen/screenshot`     | `?monitor=0&format=png`                                                      | `format=png` → raw PNG; default → `{image: data-url, width, height}` |
 
-The first run will prompt for **Accessibility** and **Screen Recording**
-permissions. Grant both in *System Settings → Privacy & Security*, then
-restart the app.
+### Keys
 
-Default API port is `39213`. Override with `CURSOR_POINTER_PORT=...`.
+`enter`, `tab`, `space`, `backspace`, `delete`, `escape`, `up`, `down`,
+`left`, `right`, `home`, `end`, `pageup`, `pagedown`, `shift`, `ctrl`,
+`alt` / `option`, `cmd` / `meta`, `f1`…`f12`, and any single character
+(`a`, `1`, `/`, …).
 
 ## Build a `.dmg`
 
@@ -101,54 +185,6 @@ Three ways to bypass:
    `bundle.macOS.signingIdentity` in `tauri.conf.json` plus `notarize` env
    vars (`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) before running
    `tauri build`.
-
-## HTTP API (cheat sheet)
-
-All endpoints accept/return JSON unless noted. Default base URL
-`http://127.0.0.1:39213`.
-
-| Method | Path                     | Body / Query                                                                 | Notes                              |
-| ------ | ------------------------ | ---------------------------------------------------------------------------- | ---------------------------------- |
-| GET    | `/health`                | —                                                                            | `{ok, version, name}`              |
-| POST   | `/mouse/move`            | `{x, y}`                                                                     | Absolute coordinates (logical px)  |
-| POST   | `/mouse/click`           | `{x?, y?, button?: "left"\|"right"\|"middle", count?: 1}`                   | Move-then-click if x,y given       |
-| POST   | `/mouse/down` / `/up`    | `{button?}`                                                                  | Hold / release                     |
-| POST   | `/mouse/scroll`          | `{dx?, dy?, x?, y?}`                                                         | Ticks; +y = down                   |
-| GET    | `/mouse/position`        | —                                                                            | `{x, y}`                           |
-| POST   | `/keyboard/type`         | `{text}`                                                                     | Unicode text input                 |
-| POST   | `/keyboard/key`          | `{key, modifiers?: ["cmd","shift",...]}`                                     | Tap with optional combo            |
-| POST   | `/keyboard/down`/`/up`   | `{key}`                                                                      | Hold / release                     |
-| GET    | `/screen/monitors`       | —                                                                            | List of `{index,x,y,width,height,scale_factor,is_primary,name}` |
-| GET    | `/screen/screenshot`     | `?monitor=0&format=png`                                                      | `format=png` → raw PNG; default → `{image: data-url, width, height}` |
-
-### Keys
-
-`enter`, `tab`, `space`, `backspace`, `delete`, `escape`, `up`, `down`,
-`left`, `right`, `home`, `end`, `pageup`, `pagedown`, `shift`, `ctrl`,
-`alt` / `option`, `cmd` / `meta`, `f1`…`f12`, and any single character
-(`a`, `1`, `/`, …).
-
-## Python SDK
-
-See [`python-client/`](python-client/).
-
-```python
-from cursor_pointer import CursorPointer
-
-cp = CursorPointer()
-cp.click(640, 480)
-cp.type_text("hello")
-cp.hotkey("cmd", "a")
-png = cp.screenshot()
-```
-
-End-to-end OCR demo:
-
-```bash
-cd python-client
-pip install -e ".[ocr]"
-python examples/ocr_click.py "Submit"
-```
 
 ## Permissions checklist (macOS)
 
